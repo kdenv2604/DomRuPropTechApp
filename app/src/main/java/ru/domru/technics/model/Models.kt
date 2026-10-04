@@ -9,6 +9,7 @@ data class AccountProfile(
     val title: String,
     val loginHint: String,
     val isDemo: Boolean = false,
+    val hasSavedPassword: Boolean = false,
 )
 
 /** Результат безопасной проверки сохранённой сессии. */

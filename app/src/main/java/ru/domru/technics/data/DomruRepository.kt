@@ -35,6 +35,7 @@ interface DomruRepository {
 enum class AuthenticationFailure {
     INVALID_CREDENTIALS,
     SESSION_EXPIRED,
+    PASSWORD_NOT_STORED,
     CLIENT_REJECTED,
     SERVICE_UNAVAILABLE,
 }

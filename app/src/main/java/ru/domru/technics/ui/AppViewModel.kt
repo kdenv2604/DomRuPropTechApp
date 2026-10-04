@@ -268,12 +268,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         checkAccountAccesses(loadAddressesAfter = true)
     }
 
-    /** Открывает смену пароля только для подтверждённо потерянного доступа. */
+    /** Открывает ввод пароля для старой записи или после окончательной потери доступа. */
     fun beginPasswordRenewal(accountId: String) {
-        if (mutableState.value.accountStatuses[accountId]
-                ?.allowsAccountRecoveryActions() != true
-        ) {
-            eventChannel.trySend(AppEvent.Message("Новый пароль доступен только для потерянного доступа"))
+        val account = mutableState.value.accounts.firstOrNull { it.id == accountId } ?: return
+        val maySaveOldAccountPassword = !account.isDemo && !account.hasSavedPassword
+        val mayReplaceRejectedPassword = mutableState.value.accountStatuses[accountId]
+            ?.allowsAccountRecoveryActions() == true
+        if (!maySaveOldAccountPassword && !mayReplaceRejectedPassword) {
+            eventChannel.trySend(AppEvent.Message("Сохранённый пароль ещё действует"))
             return
         }
         mutableState.update {
@@ -293,7 +295,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Получает свежую сессию по новому паролю и не сохраняет сам пароль. */
+    /** Проверяет пароль, шифрует его и получает совершенно новую серверную сессию. */
     fun renewPassword(newPassword: String) {
         val current = mutableState.value
         val accountId = current.passwordRenewalAccountId ?: return
@@ -303,7 +305,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             mutableState.update { it.copy(passwordRenewalError = "Введи новый пароль") }
             return
         }
-        if (current.accountStatuses[accountId]?.allowsAccountRecoveryActions() != true) {
+        val firstPasswordSave = !account.hasSavedPassword
+        if (!firstPasswordSave &&
+            current.accountStatuses[accountId]?.allowsAccountRecoveryActions() != true
+        ) {
             mutableState.update {
                 it.copy(passwordRenewalError = "Доступ уже действует. Менять пароль нельзя")
             }
@@ -314,7 +319,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val updated = retryPolicy.execute(RequestKind.LOGIN) {
-                    repository.renewPassword(account.id, newPassword)
+                    if (firstPasswordSave) {
+                        repository.savePasswordForAutomaticLogin(account.id, newPassword)
+                    } else {
+                        repository.renewPassword(account.id, newPassword)
+                    }
                 }
                 val accounts = mutableState.value.accounts.map { saved ->
                     if (saved.id == accountId) updated else saved

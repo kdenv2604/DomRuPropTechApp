@@ -1,8 +1,8 @@
 package ru.domru.technics.data
 
 /**
- * Эти данные заменяют сохранённый пароль.
- * Сервер выдаёт токены после входа, а телефон прячет их своим системным ключом.
+ * Все секреты одного логина, которые телефон хранит под ключом Android Keystore.
+ * Пароль нужен только для автоматического нового входа, если сервер отверг старые токены.
  */
 internal data class StoredSession(
     val accountId: String,
@@ -10,6 +10,7 @@ internal data class StoredSession(
     val login: String,
     val accessToken: String,
     val refreshToken: String?,
+    val password: String?,
     val accessTokenExpiresAtMillis: Long,
     val createdAtMillis: Long,
 )
@@ -23,3 +24,18 @@ internal data class AuthorizedSession(
     val refreshToken: String?,
     val accessTokenExpiresAtMillis: Long,
 )
+
+/** Короткий результат обычного обновления токена без повторной отправки пароля. */
+internal data class AuthorizedToken(
+    val accessToken: String,
+    val refreshToken: String,
+    val accessTokenExpiresAtMillis: Long,
+)
+
+/** Позволяет проверять восстановление сессии без настоящего хранилища телефона. */
+internal interface SessionStore {
+    fun loadAll(): List<StoredSession>
+    fun find(accountId: String): StoredSession?
+    fun save(session: StoredSession)
+    fun delete(accountId: String)
+}

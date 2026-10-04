@@ -163,23 +163,30 @@ private fun AccountRow(
                 AccountStatusLine(account = account, status = status)
             }
         }
-        val actionsAvailable = account.isDemo || status.allowsAccountRecoveryActions()
+        val passwordNeedsFirstSave = !account.isDemo && !account.hasSavedPassword
+        val actionsAvailable = account.isDemo ||
+            passwordNeedsFirstSave ||
+            status.allowsAccountRecoveryActions()
         if (actionsAvailable) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (!account.isDemo && status.allowsAccountRecoveryActions()) {
+                if (!account.isDemo &&
+                    (passwordNeedsFirstSave || status.allowsAccountRecoveryActions())
+                ) {
                     TextButton(onClick = onRenewPassword) {
-                        Text("НОВЫЙ ПАРОЛЬ")
+                        Text(if (passwordNeedsFirstSave) "СОХРАНИТЬ ПАРОЛЬ" else "НОВЫЙ ПАРОЛЬ")
                     }
                 }
-                TextButton(onClick = onRemove) {
-                    Text(
-                        if (account.isDemo) "ВЫЙТИ" else "УДАЛИТЬ",
-                        color = MaterialTheme.colorScheme.error,
-                    )
+                if (account.isDemo || status.allowsAccountRecoveryActions()) {
+                    TextButton(onClick = onRemove) {
+                        Text(
+                            if (account.isDemo) "ВЫЙТИ" else "УДАЛИТЬ",
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             }
         }
@@ -192,19 +199,25 @@ private fun AccountStatusLine(account: AccountProfile, status: AccountAccessStat
     val actualStatus = if (account.isDemo) AccountAccessStatus.ACTIVE else status
     val text = when {
         account.isDemo -> "Демо-доступ"
+        !account.hasSavedPassword && actualStatus == AccountAccessStatus.ACTIVE ->
+            "Доступ действует — сохрани пароль для автовхода"
+        !account.hasSavedPassword -> "Для автовхода нужно сохранить пароль"
         actualStatus == AccountAccessStatus.CHECKING -> "Проверяем доступ…"
         actualStatus == AccountAccessStatus.ACTIVE -> "Доступ действует"
         actualStatus == AccountAccessStatus.NEEDS_PASSWORD -> "Доступ потерян — нужен новый пароль"
         actualStatus == AccountAccessStatus.ACCESS_DENIED -> "Сервер запретил доступ"
         else -> "Не удалось проверить доступ"
     }
-    val color = when (actualStatus) {
-        AccountAccessStatus.ACTIVE -> SuccessGreen
-        AccountAccessStatus.NEEDS_PASSWORD,
-        AccountAccessStatus.ACCESS_DENIED,
-        -> MaterialTheme.colorScheme.error
-        AccountAccessStatus.UNAVAILABLE -> WarningAmber
-        AccountAccessStatus.CHECKING -> MaterialTheme.colorScheme.onSurfaceVariant
+    val color = when {
+        !account.isDemo && !account.hasSavedPassword -> WarningAmber
+        else -> when (actualStatus) {
+            AccountAccessStatus.ACTIVE -> SuccessGreen
+            AccountAccessStatus.NEEDS_PASSWORD,
+            AccountAccessStatus.ACCESS_DENIED,
+            -> MaterialTheme.colorScheme.error
+            AccountAccessStatus.UNAVAILABLE -> WarningAmber
+            AccountAccessStatus.CHECKING -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
     }
     Row(
         modifier = Modifier.padding(top = 5.dp),
@@ -220,7 +233,7 @@ private fun AccountStatusLine(account: AccountProfile, status: AccountAccessStat
     }
 }
 
-/** Просит только новый пароль: сохранённый логин человек случайно изменить не сможет. */
+/** Просит текущий или новый пароль, но не разрешает случайно изменить сохранённый логин. */
 @Composable
 fun PasswordRenewalDialog(
     account: AccountProfile,
@@ -230,10 +243,11 @@ fun PasswordRenewalDialog(
     onDismiss: () -> Unit,
 ) {
     var password by remember(account.id) { mutableStateOf("") }
+    val firstSave = !account.hasSavedPassword
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         shape = RoundedCornerShape(28.dp),
-        title = { Text("Новый пароль") },
+        title = { Text(if (firstSave) "Сохранить пароль" else "Новый пароль") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
@@ -245,7 +259,7 @@ fun PasswordRenewalDialog(
                     value = password,
                     onValueChange = { password = it },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Новый пароль") },
+                    label = { Text(if (firstSave) "Текущий пароль" else "Новый пароль") },
                     enabled = !busy,
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
@@ -256,7 +270,8 @@ fun PasswordRenewalDialog(
                     isError = errorMessage != null,
                 )
                 Text(
-                    "Пароль проверяется сервером и не сохраняется на телефоне.",
+                    "Пароль проверяется сервером и сохраняется только в зашифрованном " +
+                        "хранилище Android. Он нужен приложению для автоматического входа.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

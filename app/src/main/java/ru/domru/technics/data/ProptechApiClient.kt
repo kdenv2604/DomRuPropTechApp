@@ -266,15 +266,46 @@ internal class ProptechApiClient(
         }
     }
 
-    /** Собирает общий HTTP-запрос, подставляет токен и гарантированно закрывает соединение. */
+    /**
+     * Выполняет запрос и один раз повторяет безопасное чтение после полноценного автовхода.
+     * Команду открытия двери здесь не повторяем: первый POST теоретически мог сработать.
+     */
     private suspend fun request(
         accountId: String,
         specificationId: String,
         method: String,
         url: String,
         body: String? = null,
+    ): PortalResponse {
+        val firstToken = sessionProvider.accessToken(accountId)
+        val firstResponse = executeRequest(
+            token = firstToken,
+            specificationId = specificationId,
+            method = method,
+            url = url,
+            body = body,
+        )
+        if (firstResponse.code != 401 || method != "GET") return firstResponse
+
+        // Новый вход сам ограничен тремя попытками. Запрос GET после него повторяется один раз.
+        val recoveredToken = sessionProvider.recoverAfterUnauthorized(accountId, firstToken)
+        return executeRequest(
+            token = recoveredToken,
+            specificationId = specificationId,
+            method = method,
+            url = url,
+            body = body,
+        )
+    }
+
+    /** Собирает один HTTP-запрос, подставляет токен и всегда закрывает соединение. */
+    private suspend fun executeRequest(
+        token: String,
+        specificationId: String,
+        method: String,
+        url: String,
+        body: String?,
     ): PortalResponse = withContext(Dispatchers.IO) {
-        val token = sessionProvider.accessToken(accountId)
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = NETWORK_TIMEOUT_MILLIS

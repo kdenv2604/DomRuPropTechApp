@@ -106,7 +106,7 @@ fun AddLoginScreen(
             Spacer(Modifier.height(12.dp))
             Text(
                 text = "Двери этого аккаунта появятся в общем списке. " +
-                    "Пароль не сохраняется: телефон запомнит только защищённую сессию.",
+                    "Пароль хранится зашифрованно и нужен для автоматического нового входа.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

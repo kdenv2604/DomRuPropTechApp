@@ -44,7 +44,34 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
 
     override suspend fun signIn(login: String, password: String): AccountProfile {
         val authorized = oidcClient.signIn(login, password)
-        return saveAuthorizedSession(authorized)
+        return saveAuthorizedSession(authorized, password = password)
+    }
+
+    /**
+     * Проверяет и сохраняет пароль аккаунта из старой версии приложения.
+     * Старый пароль прочитать невозможно: прежняя версия его действительно не записывала.
+     */
+    suspend fun savePasswordForAutomaticLogin(
+        accountId: String,
+        password: String,
+    ): AccountProfile {
+        val oldSession = sessionStore.find(accountId)
+            ?: throw DomruAuthenticationException(
+                "Сохранённый логин не найден",
+                AuthenticationFailure.SESSION_EXPIRED,
+            )
+        val authorized = oidcClient.signIn(oldSession.login, password)
+        val updated = saveAuthorizedSession(
+            authorized = authorized,
+            password = password,
+            createdAtMillis = oldSession.createdAtMillis,
+        )
+        if (updated.id != accountId) {
+            // Сервер сменил внутренний номер: старая запись больше не должна путать экран.
+            sessionStore.delete(accountId)
+            catalogs.remove(accountId)
+        }
+        return updated
     }
 
     /** Проверяет сессию настоящим запросом профиля, не сохраняя и не спрашивая пароль. */
@@ -96,7 +123,11 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
         }
 
         val authorized = oidcClient.signIn(oldSession.login, newPassword)
-        val updated = saveAuthorizedSession(authorized, oldSession.createdAtMillis)
+        val updated = saveAuthorizedSession(
+            authorized = authorized,
+            password = newPassword,
+            createdAtMillis = oldSession.createdAtMillis,
+        )
         if (updated.id != accountId) {
             // Если сервер сменил внутренний идентификатор, старую битую запись больше не держим.
             sessionStore.delete(accountId)
@@ -375,6 +406,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
     /** Шифрует новую сессию и сохраняет прежнюю дату добавления аккаунта. */
     private fun saveAuthorizedSession(
         authorized: AuthorizedSession,
+        password: String,
         createdAtMillis: Long? = null,
     ): AccountProfile {
         val oldSession = sessionStore.find(authorized.accountId)
@@ -384,6 +416,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
             login = authorized.login,
             accessToken = authorized.accessToken,
             refreshToken = authorized.refreshToken,
+            password = password,
             accessTokenExpiresAtMillis = authorized.accessTokenExpiresAtMillis,
             createdAtMillis = createdAtMillis
                 ?: oldSession?.createdAtMillis
@@ -399,5 +432,6 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
         id = accountId,
         title = title,
         loginHint = login,
+        hasSavedPassword = !password.isNullOrBlank(),
     )
 }

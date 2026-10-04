@@ -16,7 +16,7 @@ import javax.crypto.spec.GCMParameterSpec
  * Хранит каждую сессию в зашифрованном виде.
  * Ключ создаёт сам Android, поэтому обычным чтением файлов токены получить нельзя.
  */
-internal class SecureSessionStore(context: Context) {
+internal class SecureSessionStore(context: Context) : SessionStore {
     private val preferences = context.applicationContext.getSharedPreferences(
         PREFERENCES_NAME,
         Context.MODE_PRIVATE,
@@ -24,14 +24,14 @@ internal class SecureSessionStore(context: Context) {
 
     /** Читает все целые записи, а безнадёжно повреждённые аккуратно убирает. */
     @Synchronized
-    fun loadAll(): List<StoredSession> {
+    override fun loadAll(): List<StoredSession> {
         val brokenKeys = mutableListOf<String>()
         val sessions = preferences.all.mapNotNull { (key, storedValue) ->
             if (!key.startsWith(SESSION_PREFIX) || storedValue !is String) return@mapNotNull null
             try {
                 decodeSession(decrypt(storedValue))
             } catch (_: Exception) {
-                // Повреждённая сессия уже бесполезна. Пароль мы не знаем и подменять её не будем.
+                // Повреждённую зашифрованную запись нельзя безопасно восстановить догадками.
                 brokenKeys += key
                 null
             }
@@ -47,13 +47,13 @@ internal class SecureSessionStore(context: Context) {
 
     /** Ищет одну сессию по внутреннему номеру аккаунта. */
     @Synchronized
-    fun find(accountId: String): StoredSession? = loadAll().firstOrNull {
+    override fun find(accountId: String): StoredSession? = loadAll().firstOrNull {
         it.accountId == accountId
     }
 
-    /** Шифрует и сохраняет сессию; пароль в эту запись никогда не входит. */
+    /** Шифрует всю запись, включая пароль для будущего автоматического входа. */
     @Synchronized
-    fun save(session: StoredSession) {
+    override fun save(session: StoredSession) {
         try {
             preferences.edit()
                 .putString(sessionKey(session.accountId), encrypt(encodeSession(session)))
@@ -67,7 +67,7 @@ internal class SecureSessionStore(context: Context) {
 
     /** Удаляет только запись указанного аккаунта. */
     @Synchronized
-    fun delete(accountId: String) {
+    override fun delete(accountId: String) {
         preferences.edit().remove(sessionKey(accountId)).apply()
     }
 
@@ -122,6 +122,7 @@ internal class SecureSessionStore(context: Context) {
         .put("login", session.login)
         .put("accessToken", session.accessToken)
         .put("refreshToken", session.refreshToken ?: JSONObject.NULL)
+        .put("password", session.password ?: JSONObject.NULL)
         .put("accessTokenExpiresAtMillis", session.accessTokenExpiresAtMillis)
         .put("createdAtMillis", session.createdAtMillis)
         .toString()
@@ -138,6 +139,12 @@ internal class SecureSessionStore(context: Context) {
                 null
             } else {
                 json.optString("refreshToken").takeIf(String::isNotBlank)
+            },
+            // В старых версиях поля не было. Такая запись продолжит работать до конца токенов.
+            password = if (!json.has("password") || json.isNull("password")) {
+                null
+            } else {
+                json.optString("password").takeIf(String::isNotBlank)
             },
             accessTokenExpiresAtMillis = json.getLong("accessTokenExpiresAtMillis"),
             createdAtMillis = json.getLong("createdAtMillis"),

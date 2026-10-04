@@ -10,10 +10,20 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
+/** Описывает три штатные операции Keycloak, чтобы их можно было проверить тестами. */
+internal interface OidcSessionClient {
+    suspend fun signIn(login: String, password: String): AuthorizedSession
+    suspend fun refresh(refreshToken: String): AuthorizedToken
+    suspend fun signOut(refreshToken: String)
+}
+
 /** Выполняет штатный вход в Keycloak на id.dom.ru без открытия браузера. */
-internal class DomruOidcClient {
-    /** Меняет введённые данные на токены и сразу забывает пароль. */
-    suspend fun signIn(login: String, password: String): AuthorizedSession = withContext(Dispatchers.IO) {
+internal class DomruOidcClient : OidcSessionClient {
+    /** Проверяет пару логин-пароль и получает совершенно новый набор токенов. */
+    override suspend fun signIn(
+        login: String,
+        password: String,
+    ): AuthorizedSession = withContext(Dispatchers.IO) {
         val response = postForm(
             url = TOKEN_URL,
             fields = linkedMapOf(
@@ -45,7 +55,7 @@ internal class DomruOidcClient {
     }
 
     /** Получает новый короткий токен по длинной сохранённой сессии. */
-    suspend fun refresh(refreshToken: String): AuthorizedToken = withContext(Dispatchers.IO) {
+    override suspend fun refresh(refreshToken: String): AuthorizedToken = withContext(Dispatchers.IO) {
         val response = postForm(
             url = TOKEN_URL,
             fields = linkedMapOf(
@@ -65,7 +75,7 @@ internal class DomruOidcClient {
     }
 
     /** Просит сервер завершить сессию, связанную с токеном обновления. */
-    suspend fun signOut(refreshToken: String) = withContext(Dispatchers.IO) {
+    override suspend fun signOut(refreshToken: String) = withContext(Dispatchers.IO) {
         val response = postForm(
             url = LOGOUT_URL,
             fields = linkedMapOf(
@@ -151,13 +161,6 @@ internal class DomruOidcClient {
             "%02x".format(byte.toInt() and 0xff)
         }
     }
-
-    /** Обновлённые токены и время, после которого короткий токен протухнет. */
-    internal data class AuthorizedToken(
-        val accessToken: String,
-        val refreshToken: String,
-        val accessTokenExpiresAtMillis: Long,
-    )
 
     /** Только те части HTTP-ответа, которые нужны этому классу. */
     private data class HttpResponse(val code: Int, val body: String)
