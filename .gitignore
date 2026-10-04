@@ -1,0 +1,16 @@
+.gradle/
+.kotlin/
+.idea/
+local.properties
+**/build/
+dist/
+*.iml
+captures/
+.DS_Store
+
+# Подписанные APK и ключи подписи нельзя хранить вместе с исходным кодом.
+*.apk
+*.aab
+*.jks
+*.keystore
+keystore.properties

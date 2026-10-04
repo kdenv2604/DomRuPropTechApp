@@ -1,0 +1,35 @@
+name: Сообщить об ошибке
+description: Ошибка интерфейса, входа, адресов, камеры или команды двери
+title: "[Ошибка] "
+labels: [ошибка]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Не публикуйте логины, пароли, токены, коды дверей, ссылки камер и личные данные.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Что произошло
+      description: Опишите понятными словами фактический результат.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как повторить
+      description: Перечислите безопасные шаги без секретных данных.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия приложения
+      placeholder: "Например, 0.3.2"
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Устройство и версия Android
+      placeholder: "Например, Xiaomi, Android 10"

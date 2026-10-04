@@ -1,0 +1,37 @@
+name: Проверка Android-проекта
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Тесты, Lint и APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Получение исходников
+        uses: actions/checkout@v4
+
+      - name: Установка Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Подготовка Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Проверка проекта
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug
+
+      - name: Сохранение проверочного APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lk.proptech.ru-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
