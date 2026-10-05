@@ -172,15 +172,6 @@ fun WorkScreen(
                         is AddressListItem.EntranceRow -> EntranceListRow(
                             entrance = row.entrance,
                             expanded = state.selection.entranceId == row.entrance.id,
-                            doorState = state.doorActions[row.entrance.id] ?: DoorActionState.Idle,
-                            codeState = state.codeActions[row.entrance.id] ?: CodeActionState.Idle,
-                            onOpenDoor = { onOpenDoor(row.entrance) },
-                            onToggle = {
-                                onEntranceClick(row.streetId, row.houseId, row.entrance)
-                            },
-                        )
-                        is AddressListItem.PreviewRow -> EntrancePreviewRow(
-                            entrance = row.entrance,
                             cameraState = state.cameraStates[row.entrance.id]
                                 ?: ru.domru.technics.model.CameraState.Idle,
                             doorState = state.doorActions[row.entrance.id] ?: DoorActionState.Idle,
@@ -188,6 +179,9 @@ fun WorkScreen(
                             onOpenDoor = { onOpenDoor(row.entrance) },
                             onRequestCode = { onRequestCode(row.entrance) },
                             onRetryCamera = { onRetryCamera(row.entrance) },
+                            onToggle = {
+                                onEntranceClick(row.streetId, row.houseId, row.entrance)
+                            },
                         )
                         is AddressListItem.LoadingRow -> AddressLoadingRow()
                     }

@@ -1,6 +1,15 @@
 package ru.domru.technics.ui.screens
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -85,11 +94,6 @@ sealed interface AddressListItem {
         override val key: String = "entrance:${entrance.id}"
     }
 
-    /** Камера и рабочие кнопки раскрытого подъезда. */
-    data class PreviewRow(val entrance: Entrance) : AddressListItem {
-        override val key: String = "preview:${entrance.id}"
-    }
-
     /** Индикатор загрузки дочерних адресов. */
     data class LoadingRow(override val key: String) : AddressListItem
 }
@@ -118,9 +122,6 @@ fun buildVisibleAddressRows(state: AppUiState): List<AddressListItem> = buildLis
                 }
                 state.entrancesByHouse[house.id].orEmpty().forEach { entrance ->
                     add(AddressListItem.EntranceRow(street.id, house.id, entrance))
-                    if (state.selection.entranceId == entrance.id) {
-                        add(AddressListItem.PreviewRow(entrance))
-                    }
                 }
             }
         }
@@ -269,14 +270,20 @@ fun HouseListRow(house: House, expanded: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** Короткая строка подъезда с открытием двери и стрелкой подробностей. */
+/**
+ * Одна карточка подъезда в двух состояниях.
+ * При раскрытии она сама вырастает, а не создаёт вторую карточку под собой.
+ */
 @Composable
 fun EntranceListRow(
     entrance: Entrance,
     expanded: Boolean,
+    cameraState: CameraState,
     doorState: DoorActionState,
     codeState: CodeActionState,
     onOpenDoor: () -> Unit,
+    onRequestCode: () -> Unit,
+    onRetryCamera: () -> Unit,
     onToggle: () -> Unit,
 ) {
     val busy = doorState == DoorActionState.Sending || codeState == CodeActionState.Loading
@@ -285,63 +292,95 @@ fun EntranceListRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 42.dp),
-        shape = RoundedCornerShape(18.dp),
+            .padding(start = 42.dp)
+            .animateContentSize(),
+        shape = RoundedCornerShape(if (expanded) 22.dp else 18.dp),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = if (expanded) 2.dp else 0.dp,
     ) {
-        Column(modifier = Modifier.padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 10.dp)) {
-            if (useStackedLayout) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    EntranceTitle(entrance = entrance, modifier = Modifier.weight(1f))
-                    EntranceChevron(expanded = expanded, onClick = onToggle)
-                }
-                Spacer(Modifier.height(8.dp))
-                DoorActionButton(
-                    state = doorState,
-                    enabled = !busy,
-                    onClick = onOpenDoor,
-                    modifier = Modifier.fillMaxWidth(),
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                EntranceTitle(
+                    entrance = entrance,
+                    expanded = expanded,
+                    modifier = Modifier.weight(1f),
                 )
-            } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    EntranceTitle(entrance = entrance, modifier = Modifier.weight(1f))
+                AnimatedVisibility(
+                    visible = !expanded && !useStackedLayout,
+                    enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
+                    exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End),
+                ) {
                     DoorActionButton(
                         state = doorState,
                         enabled = !busy,
                         onClick = onOpenDoor,
                     )
-                    EntranceChevron(expanded = expanded, onClick = onToggle)
+                }
+                EntranceChevron(expanded = expanded, onClick = onToggle)
+            }
+
+            AnimatedVisibility(
+                visible = !expanded && useStackedLayout,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                Column {
+                    Spacer(Modifier.height(8.dp))
+                    DoorActionButton(
+                        state = doorState,
+                        enabled = !busy,
+                        onClick = onOpenDoor,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
 
-            val message = when {
-                doorState is DoorActionState.Failed -> doorState.message
-                doorState is DoorActionState.Uncertain -> doorState.message + ". Повтор — только вручную"
-                else -> null
-            }
-            if (message != null) {
-                Text(
-                    text = message,
-                    modifier = Modifier.padding(top = 7.dp, end = 10.dp),
-                    color = if (doorState is DoorActionState.Uncertain) WarningAmber
-                    else MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.labelMedium,
+            AnimatedVisibility(
+                visible = expanded,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                ExpandedEntranceContent(
+                    entrance = entrance,
+                    cameraState = cameraState,
+                    doorState = doorState,
+                    codeState = codeState,
+                    busy = busy,
+                    useStackedLayout = useStackedLayout,
+                    onOpenDoor = onOpenDoor,
+                    onRequestCode = onRequestCode,
+                    onRetryCamera = onRetryCamera,
                 )
             }
+
+            DoorStatusMessage(state = doorState)
         }
     }
 }
 
-/** Показывает короткое имя подъезда и при необходимости число доступов к нему. */
+/** Показывает короткое имя в строке и полное имя внутри раскрытой карточки. */
 @Composable
-private fun EntranceTitle(entrance: Entrance, modifier: Modifier = Modifier) {
+private fun EntranceTitle(
+    entrance: Entrance,
+    expanded: Boolean,
+    modifier: Modifier = Modifier,
+) {
     Column(modifier = modifier) {
-        Text(
-            text = entrance.label.toCompactEntranceLabel(),
-            style = MaterialTheme.typography.titleMedium,
-            softWrap = true,
-        )
+        Crossfade(targetState = expanded, label = "entrance-title") { showFullTitle ->
+            Text(
+                text = if (showFullTitle) {
+                    entrance.label.toExpandedEntranceLabel()
+                } else {
+                    entrance.label.toCompactEntranceLabel()
+                },
+                style = if (showFullTitle) {
+                    MaterialTheme.typography.titleLarge
+                } else {
+                    MaterialTheme.typography.titleMedium
+                },
+                softWrap = true,
+            )
+        }
         if (entrance.sources.size > 1) {
             Text(
                 russianQuantity(entrance.sources.size, "доступ", "доступа", "доступов"),
@@ -373,6 +412,36 @@ internal fun String.toCompactEntranceLabel(): String {
         "Под." + drop(fullWord.length)
     } else {
         this
+    }
+}
+
+/** Возвращает полное слово для заголовка раскрытой карточки. */
+internal fun String.toExpandedEntranceLabel(): String {
+    val shortWord = "Под."
+    val wordEndsHere = length == shortWord.length || getOrNull(shortWord.length)?.isWhitespace() == true
+    return if (startsWith(shortWord, ignoreCase = true) && wordEndsHere) {
+        "Подъезд" + drop(shortWord.length)
+    } else {
+        this
+    }
+}
+
+/** Показывает ошибку двери внутри той же карточки в обоих её состояниях. */
+@Composable
+private fun DoorStatusMessage(state: DoorActionState) {
+    val message = when (state) {
+        is DoorActionState.Failed -> state.message
+        is DoorActionState.Uncertain -> state.message + ". Повтор — только вручную"
+        else -> null
+    }
+    if (message != null) {
+        Text(
+            text = message,
+            modifier = Modifier.padding(top = 7.dp, end = 10.dp),
+            color = if (state is DoorActionState.Uncertain) WarningAmber
+            else MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.labelMedium,
+        )
     }
 }
 
@@ -437,73 +506,66 @@ private fun CodeActionButton(
     }
 }
 
-/** Развёрнутая часть подъезда: камера и две рабочие команды. */
+/** Содержимое, в которое превращается сама раскрытая карточка подъезда. */
 @Composable
-fun EntrancePreviewRow(
+private fun ExpandedEntranceContent(
     entrance: Entrance,
     cameraState: CameraState,
     doorState: DoorActionState,
     codeState: CodeActionState,
+    busy: Boolean,
+    useStackedLayout: Boolean,
     onOpenDoor: () -> Unit,
     onRequestCode: () -> Unit,
     onRetryCamera: () -> Unit,
 ) {
-    val busy = doorState == DoorActionState.Sending || codeState == CodeActionState.Loading
-    val useStackedLayout = LocalDensity.current.fontScale >= LARGE_FONT_SCALE
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 42.dp),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            CameraArea(
-                cameraAvailable = entrance.cameraAvailable,
-                cameraState = cameraState,
-                onRetry = onRetryCamera,
+    Column {
+        Spacer(Modifier.height(10.dp))
+        CameraArea(
+            cameraAvailable = entrance.cameraAvailable,
+            cameraState = cameraState,
+            onRetry = onRetryCamera,
+        )
+        Spacer(Modifier.height(12.dp))
+        if (useStackedLayout) {
+            // На крупном шрифте две кнопки стоят одна под другой и не обрезают текст.
+            DoorActionButton(
+                state = doorState,
+                enabled = !busy,
+                onClick = onOpenDoor,
+                modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(12.dp))
-            if (useStackedLayout) {
-                // На крупном шрифте две кнопки стоят одна под другой и не обрезают текст.
+            Spacer(Modifier.height(8.dp))
+            CodeActionButton(
+                state = codeState,
+                enabled = !busy,
+                onClick = onRequestCode,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            Row(modifier = Modifier.fillMaxWidth()) {
                 DoorActionButton(
                     state = doorState,
                     enabled = !busy,
                     onClick = onOpenDoor,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.width(8.dp))
                 CodeActionButton(
                     state = codeState,
                     enabled = !busy,
                     onClick = onRequestCode,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            } else {
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    DoorActionButton(
-                        state = doorState,
-                        enabled = !busy,
-                        onClick = onOpenDoor,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    CodeActionButton(
-                        state = codeState,
-                        enabled = !busy,
-                        onClick = onRequestCode,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-            if (codeState is CodeActionState.Failed) {
-                Text(
-                    text = codeState.message,
-                    modifier = Modifier.padding(top = 8.dp),
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.weight(1f),
                 )
             }
+        }
+        if (codeState is CodeActionState.Failed) {
+            Text(
+                text = codeState.message,
+                modifier = Modifier.padding(top = 8.dp),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.labelMedium,
+            )
         }
     }
 }
