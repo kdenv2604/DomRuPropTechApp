@@ -19,7 +19,7 @@ class AddressRowsTest {
     }
 
     @Test
-    fun `раскрытый город показывает только свои улицы`() {
+    fun `раскрытый город показывает только свои дома без уровня улиц`() {
         val kazan = Locality("kazan", "Казань")
         val perm = Locality("perm", "Пермь")
         val state = AppUiState(
@@ -28,15 +28,18 @@ class AddressRowsTest {
                 Street("p-1", "Центральная", locality = perm),
             ),
             selection = AccordionSelection(localityId = kazan.id),
+            housesByStreet = mapOf("k-1" to listOf(House("k-house", "k-1", "Дом 9")),
+                "p-1" to listOf(House("p-house", "p-1", "Дом 9"))),
         )
 
         val rows = buildVisibleAddressRows(state)
 
         assertEquals(2, rows.count { it is AddressListItem.LocalityRow })
-        assertEquals(1, rows.count { it is AddressListItem.StreetRow })
+        assertEquals(0, rows.count { it is AddressListItem.StreetRow })
+        assertEquals(1, rows.count { it is AddressListItem.HouseRow })
         assertEquals(
             "k-1",
-            (rows.first { it is AddressListItem.StreetRow } as AddressListItem.StreetRow).street.id,
+            (rows.first { it is AddressListItem.HouseRow } as AddressListItem.HouseRow).streetId,
         )
     }
 
@@ -61,7 +64,7 @@ class AddressRowsTest {
         val rows = buildVisibleAddressRows(state)
 
         assertEquals(1, rows.count { it is AddressListItem.EntranceRow })
-        assertEquals(4, rows.size)
+        assertEquals(3, rows.size)
         assertEquals("entrance:${entrance.id}", rows.last().key)
     }
 }

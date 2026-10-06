@@ -75,13 +75,13 @@ sealed interface AddressListItem {
         override val key: String = "locality:${locality.id}"
     }
 
-    /** Строка улицы внутри населённого пункта. */
+    /** Повтор загрузки домов улицы после ошибки. Это не отдельный уровень дерева. */
     data class StreetRow(val street: Street) : AddressListItem {
         override val key: String = "street:${street.id}"
     }
 
-    /** Строка дома внутри улицы. */
-    data class HouseRow(val streetId: String, val house: House) : AddressListItem {
+    /** Улица и дом в одной строке внутри населённого пункта. */
+    data class HouseRow(val streetId: String, val house: House, val streetName: String) : AddressListItem {
         override val key: String = "house:${house.id}"
     }
 
@@ -107,14 +107,13 @@ fun buildVisibleAddressRows(state: AppUiState): List<AddressListItem> = buildLis
         if (state.selection.localityId != locality.id) return@localityLoop
 
         localityStreets.forEach streetLoop@{ street ->
-            add(AddressListItem.StreetRow(street))
-            if (state.selection.streetId != street.id) return@streetLoop
-
             if (street.id in state.loadingStreetIds) {
                 add(AddressListItem.LoadingRow("loading-street:${street.id}"))
+            } else if (state.housesByStreet[street.id] == null) {
+                add(AddressListItem.StreetRow(street))
             }
             state.housesByStreet[street.id].orEmpty().forEach houseLoop@{ house ->
-                add(AddressListItem.HouseRow(street.id, house))
+                add(AddressListItem.HouseRow(street.id, house, street.name))
                 if (state.selection.houseId != house.id) return@houseLoop
 
                 if (house.id in state.loadingHouseIds) {
@@ -204,7 +203,7 @@ fun StreetListRow(street: Street, expanded: Boolean, onClick: () -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 // Ограничения по числу строк нет: длинная улица переносится целыми словами.
                 Text(
-                    text = street.name,
+                    text = "Повторить загрузку: ${street.name}",
                     style = MaterialTheme.typography.titleLarge,
                     softWrap = true,
                 )
@@ -233,11 +232,11 @@ fun StreetListRow(street: Street, expanded: Boolean, onClick: () -> Unit) {
 
 /** Карточка дома; счётчик подъездов показывается, если сервер его сообщил. */
 @Composable
-fun HouseListRow(house: House, expanded: Boolean, onClick: () -> Unit) {
+fun HouseListRow(house: House, streetName: String, expanded: Boolean, onClick: () -> Unit) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 28.dp)
+            .padding(start = 14.dp)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(19.dp),
         color = if (expanded) MaterialTheme.colorScheme.surfaceVariant
@@ -249,7 +248,7 @@ fun HouseListRow(house: House, expanded: Boolean, onClick: () -> Unit) {
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = house.label,
+                    text = "$streetName · ${house.label}",
                     style = MaterialTheme.typography.titleMedium,
                     softWrap = true,
                 )
@@ -292,7 +291,7 @@ fun EntranceListRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 42.dp)
+            .padding(start = 28.dp)
             .animateContentSize(),
         shape = RoundedCornerShape(if (expanded) 22.dp else 18.dp),
         color = MaterialTheme.colorScheme.surface,

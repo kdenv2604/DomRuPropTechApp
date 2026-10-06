@@ -1,0 +1,12 @@
+{
+  "from_version": "0.3.4",
+  "to_version": "0.3.5",
+  "install_replace": "PASS",
+  "uid_before": 10190,
+  "uid_after": 10190,
+  "encrypted_password_and_tokens": "PASS",
+  "preferences_and_private_file": "PASS",
+  "real_api_requests": false,
+  "certificate_sha256": "a68f4e55cccb076923e87dbd0b66ff56ec9e78ba72f0a9d2a48610f307fb7df1",
+  "apk_sha256": "878691402164440f15ef8f6c50a987e74fec311963c8bfdc14abd8838a37c782"
+}

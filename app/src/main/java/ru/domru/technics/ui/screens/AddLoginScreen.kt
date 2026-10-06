@@ -87,9 +87,9 @@ fun AddLoginScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 18.dp),
         ) {
-            // Вместо чужого логотипа показываем зелёный адрес рабочего портала.
+            // Дом.ру и адрес служебного портала в шапке формы входа.
             Text(
-                text = "lk.proptech.ru",
+                text = "dom.ru/lk.proptech.ru",
                 color = MaterialTheme.colorScheme.tertiary,
                 fontWeight = FontWeight.Black,
                 fontSize = 21.sp,

@@ -360,6 +360,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Открывает город или посёлок и закрывает старую адресную ветку. */
     fun toggleLocality(locality: Locality) {
+        if (mutableState.value.selection.localityId != locality.id) loadLocalityHouses(locality.id)
         val selection = mutableState.value.selection.toggleLocality(locality.id)
         cameraJob?.cancel()
         preferences.saveAddressSelection(selection)
@@ -372,26 +373,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Раскрывает улицу и при первом открытии загружает её дома. */
+    /** Повторяет загрузку адресов улицы после ошибки без лишнего уровня дерева. */
     fun toggleStreet(street: Street) {
-        val opening = mutableState.value.selection.streetId != street.id
-        val selection = mutableState.value.selection.toggleStreet(street.locality.id, street.id)
-        cameraJob?.cancel()
-        preferences.saveAddressSelection(selection)
-        mutableState.update {
-            it.copy(
-                selection = selection,
-                cameraStates = emptyMap(),
-                shownCode = null,
-            )
-        }
-        if (
-            opening &&
-            mutableState.value.housesByStreet[street.id] == null &&
-            street.id !in mutableState.value.loadingStreetIds
-        ) {
-            loadCombinedHouseList(street)
-        }
+        if (mutableState.value.housesByStreet[street.id] == null) loadCombinedHouseList(street)
     }
 
     /** Раскрывает дом и при первом открытии загружает его подъезды. */
@@ -612,8 +596,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Загружает и кладёт в состояние дома одной общей улицы. */
     private fun loadCombinedHouseList(street: Street) {
+        if (street.id in mutableState.value.loadingStreetIds) return
+        mutableState.update { it.copy(loadingStreetIds = it.loadingStreetIds + street.id) }
         viewModelScope.launch {
-            mutableState.update { it.copy(loadingStreetIds = it.loadingStreetIds + street.id) }
             try {
                 val houses = combinedAccess.loadHouses(street)
                 mutableState.update {
@@ -628,6 +613,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 eventChannel.send(AppEvent.Message("Не удалось загрузить дома"))
             }
         }
+    }
+
+    /** Город сразу показывает все свои дома; отдельного раскрытия улицы больше нет. */
+    private fun loadLocalityHouses(localityId: String, excludeStreet: String? = null) {
+        mutableState.value.streets.filter { it.locality.id == localityId && it.id != excludeStreet &&
+            mutableState.value.housesByStreet[it.id] == null }.forEach(::loadCombinedHouseList)
     }
 
     /** Загружает и кладёт в состояние подъезды одного общего дома. */
@@ -688,6 +679,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update {
             it.copy(selection = AccordionSelection(localityId = localityId))
         }
+        loadLocalityHouses(localityId, street?.id?.takeIf { saved.mustLoadHouses() })
         if (street == null || !saved.mustLoadHouses()) return
         mutableState.update {
             it.copy(

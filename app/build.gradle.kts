@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+
+val signingProperties = Properties().apply {
+    rootProject.file("keystore.properties").takeIf { it.isFile }?.inputStream()?.use { load(it) }
+}
+val debugKeystore = providers.environmentVariable("DOMRU_DEBUG_KEYSTORE").orNull
+    ?: signingProperties.getProperty("storeFile")
 
 android {
     namespace = "ru.domru.technics"
@@ -12,10 +20,19 @@ android {
         applicationId = "ru.domru.technics"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.3.4"
+        versionCode = 9
+        versionName = "0.3.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs.getByName("debug") {
+        if (!debugKeystore.isNullOrBlank()) {
+            storeFile = rootProject.file(debugKeystore)
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {

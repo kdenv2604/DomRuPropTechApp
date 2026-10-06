@@ -166,6 +166,7 @@ fun WorkScreen(
                         )
                         is AddressListItem.HouseRow -> HouseListRow(
                             house = row.house,
+                            streetName = row.streetName,
                             expanded = state.selection.houseId == row.house.id,
                             onClick = { onHouseClick(row.streetId, row.house) },
                         )
@@ -253,9 +254,9 @@ private fun WorkHeader(
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    // Это не логотип. Это зелёный адрес портала, с которым работает приложение.
+                    // Дом.ру и адрес служебного портала помогают отличить технический аккаунт.
                     Text(
-                        "lk.proptech.ru",
+                        "dom.ru/lk.proptech.ru",
                         color = MaterialTheme.colorScheme.tertiary,
                         fontWeight = FontWeight.Black,
                         fontSize = 20.sp,

@@ -1,0 +1,9 @@
+{
+  "app_name": "Дом.ру — тех. аккаунт",
+  "header": "dom.ru/lk.proptech.ru",
+  "three_level_hierarchy": "PASS",
+  "expanded_entrance": "PASS",
+  "restored_selection": "PASS",
+  "emulator": "emulator-5580",
+  "real_api_requests": false
+}
