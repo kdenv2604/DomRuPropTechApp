@@ -42,6 +42,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import ru.domru.technics.BuildConfig
 import ru.domru.technics.model.AccountProfile
 import ru.domru.technics.model.AccountAccessStatus
 import ru.domru.technics.model.allowsAccountRecoveryActions
@@ -336,6 +337,13 @@ fun SettingsSheet(
                 )
                 Spacer(Modifier.height(8.dp))
             }
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "Версия ${BuildConfig.VERSION_NAME.removeSuffix("-debug")} · Сборка ${BuildConfig.VERSION_CODE}",
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }

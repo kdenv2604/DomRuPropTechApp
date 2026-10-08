@@ -99,7 +99,7 @@ class PrototypeDomruRepository : DomruRepository {
     override suspend fun loadEntrances(accountId: String, houseId: String): List<Entrance> {
         pauseLikeNetwork()
         return entrancesByHouse[houseId].orEmpty().map { entrance ->
-            entrance.copy(sources = listOf(AccessSource(accountId, entrance.id)))
+            entrance.copy(sources = listOf(AccessSource(accountId, entrance.id, canVideo = entrance.cameraAvailable)))
         }
     }
 

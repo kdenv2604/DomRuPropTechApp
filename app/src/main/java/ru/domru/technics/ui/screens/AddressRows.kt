@@ -589,29 +589,27 @@ private fun CameraArea(
             LiveCameraPlayer(
                 stream = cameraState.stream,
                 onRetry = onRetry,
+                playbackGeneration = cameraState.playbackGeneration,
             )
         } else {
             CameraMessage(
                 loading = cameraState == CameraState.Loading,
                 message = when {
                     !cameraAvailable -> "Камера недоступна"
-                    cameraState is CameraState.Failed -> cameraState.message
+                    cameraState is CameraState.Failed -> cameraState.message +
+                        (cameraState.retryAfterSeconds?.let { "\nПовтор через $it с…" }.orEmpty())
                     else -> "Получаем видеопоток"
                 },
-                retryAvailable = cameraAvailable && cameraState is CameraState.Failed,
-                onRetry = onRetry,
             )
         }
     }
 }
 
-/** Заглушка камеры с индикатором или ручной кнопкой повтора. */
+/** Заглушка камеры с индикатором и состоянием автоматического восстановления. */
 @Composable
 private fun CameraMessage(
     loading: Boolean,
     message: String,
-    retryAvailable: Boolean,
-    onRetry: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -641,11 +639,6 @@ private fun CameraMessage(
             color = Color.White.copy(alpha = 0.82f),
             style = MaterialTheme.typography.bodyMedium,
         )
-        if (retryAvailable) {
-            FilledTonalButton(onClick = onRetry, modifier = Modifier.padding(top = 8.dp)) {
-                Text("ПОВТОРИТЬ ВИДЕО")
-            }
-        }
     }
 }
 

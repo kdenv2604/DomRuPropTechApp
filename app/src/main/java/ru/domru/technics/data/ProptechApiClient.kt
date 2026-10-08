@@ -204,13 +204,14 @@ internal class ProptechApiClient(
         val json = runCatching { JSONObject(response.body) }.getOrElse {
             throw PortalProtocolException("Сервер вернул непонятный ответ камеры")
         }
-        val streamUrl = json.text("streamUrl")
-        if (streamUrl.isBlank()) {
+        val streamUrl = CameraStreamFormat.validUrl(json.text("streamUrl"))
+        if (streamUrl == null) {
             throw PortalProtocolException("Сервер не дал ссылку на видеопоток")
         }
         return CameraStream(
             streamUrl = streamUrl,
-            previewUrl = json.text("previewUrl").takeIf(String::isNotBlank),
+            previewUrl = CameraStreamFormat.validUrl(json.text("previewUrl")),
+            mimeType = CameraStreamFormat.mimeType(streamUrl, json.text("mimeType", "contentType", "type")),
         )
     }
 

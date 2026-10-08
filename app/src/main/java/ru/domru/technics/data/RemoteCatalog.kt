@@ -10,6 +10,7 @@ internal data class RemoteCatalog(
     val housesByStreetId: Map<String, List<House>>,
     val entrancesByHouseId: Map<String, List<Entrance>>,
     val doorsByEntranceId: Map<String, RemoteDoor>,
+    val complete: Boolean = true,
 )
 
 /** Минимальные данные, которых достаточно для открытия одной двери. */
@@ -17,6 +18,7 @@ internal data class RemoteDoor(
     val specificationId: String,
     val deviceId: String,
     val accessControlId: String,
+    val cameraAvailable: Boolean = true,
 )
 
 /** Служебная компания, от имени которой разрешены запросы к порталу. */

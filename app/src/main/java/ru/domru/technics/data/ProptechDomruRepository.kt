@@ -210,6 +210,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
     override suspend fun getCameraStream(accountId: String, entranceId: String): CameraStream? {
         if (isDemoAccount(accountId)) return demoRepository.getCameraStream(accountId, entranceId)
         val door = catalog(accountId).doorsByEntranceId[entranceId] ?: return null
+        if (!door.cameraAvailable) return null
         return apiClient.getCameraStream(accountId, door)
     }
 
@@ -222,7 +223,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
         catalogs[accountId]?.let { return it }
         return lockFor(accountId).withLock {
             catalogs[accountId] ?: loadCatalog(accountId).also { loaded ->
-                catalogs[accountId] = loaded
+                if (loaded.complete) catalogs[accountId] = loaded
             }
         }
     }
@@ -250,81 +251,99 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
         val entrancesByHouse = mutableMapOf<String, List<Entrance>>()
         val doorsByEntrance = mutableMapOf<String, RemoteDoor>()
 
+        var successfulSpecifications = 0
+        val failures = mutableListOf<Exception>()
         specifications.forEach { specification ->
-            // В полном адресе город бывает не всегда, поэтому заранее читаем карточку компании.
-            val companyLocality = specification.localityName
-                ?: loadCompanyLocalitySafely(accountId, specification)
-            val portalHouses = apiClient.loadHouses(accountId, specification)
-            val porches = apiClient.loadPorches(accountId, specification)
-            val devices = apiClient.loadIntercomDevices(accountId, specification)
-            val usedDeviceIds = mutableSetOf<String>()
+            try {
+                // В полном адресе город бывает не всегда, поэтому заранее читаем карточку компании.
+                val companyLocality = specification.localityName
+                    ?: loadCompanyLocalitySafely(accountId, specification)
+                val portalHouses = apiClient.loadHouses(accountId, specification)
+                val porches = apiClient.loadPorches(accountId, specification)
+                val devices = apiClient.loadIntercomDevices(accountId, specification)
+                val usedDeviceIds = mutableSetOf<String>()
 
-            portalHouses.forEach { portalHouse ->
-                val address = RussianAddressParser.parse(portalHouse.address)
-                // Если город есть в полном адресе, он становится отдельной верхней ступенью.
-                val localityName = address.locality ?: companyLocality ?: UNKNOWN_LOCALITY_NAME
-                val localityKey = if (localityName == UNKNOWN_LOCALITY_NAME) {
-                    "unknown"
-                } else {
-                    AddressSearch.canonicalLocality(localityName)
-                }
-                val localityId = remoteId(specification.id, "locality", localityKey)
-                val streetKey = "$localityKey|${AddressSearch.canonical(address.street)}"
-                val streetId = remoteId(specification.id, "street", streetKey)
-                val houseId = remoteId(specification.id, "house", portalHouse.houseId)
-                val houseRoute = HouseRoute.decode(portalHouse.route)
-                val housePorches = porches.filter { porch ->
-                    porch.parentRoute == portalHouse.route ||
-                        HouseRoute.decode(porch.route)?.houseId in setOf(
-                            portalHouse.houseId,
-                            houseRoute?.houseId,
+                portalHouses.forEach { portalHouse ->
+                    val address = RussianAddressParser.parse(portalHouse.address)
+                    // Если город есть в полном адресе, он становится отдельной верхней ступенью.
+                    val localityName = address.locality ?: companyLocality ?: UNKNOWN_LOCALITY_NAME
+                    val localityKey = if (localityName == UNKNOWN_LOCALITY_NAME) {
+                        "unknown"
+                    } else {
+                        AddressSearch.canonicalLocality(localityName)
+                    }
+                    val localityId = remoteId(specification.id, "locality", localityKey)
+                    val streetKey = "$localityKey|${AddressSearch.canonical(address.street)}"
+                    val streetId = remoteId(specification.id, "street", streetKey)
+                    val houseId = remoteId(specification.id, "house", portalHouse.houseId)
+                    val houseRoute = HouseRoute.decode(portalHouse.route)
+                    val housePorches = porches.filter { porch ->
+                        porch.parentRoute == portalHouse.route ||
+                            HouseRoute.decode(porch.route)?.houseId in setOf(
+                                portalHouse.houseId,
+                                houseRoute?.houseId,
+                            )
+                    }
+                    val houseDevices = devices.filter { device ->
+                        val route = HouseRoute.decode(device.route)
+                        val matches = route?.houseId in setOf(portalHouse.houseId, houseRoute?.houseId) ||
+                            portalHouse.route.isNotBlank() && device.route.startsWith(portalHouse.route)
+                        if (matches) usedDeviceIds += device.id
+                        matches
+                    }
+                    val entrances = houseDevices.map { device ->
+                        val route = HouseRoute.decode(device.route)
+                        val porch = housePorches.firstOrNull { candidate ->
+                            candidate.route == device.route ||
+                                route?.porch in setOf(candidate.porchId, candidate.number)
+                        }
+                        device.toEntrance(specification.id, houseId, porch).also { entrance ->
+                            doorsByEntrance[entrance.id] = device.toRemoteDoor(specification.id)
+                        }
+                    }
+
+                    if (streets.none { it.id == streetId }) {
+                        streets += Street(
+                            id = streetId,
+                            name = address.street,
+                            locality = Locality(id = localityId, name = localityName),
                         )
-                }
-                val houseDevices = devices.filter { device ->
-                    val route = HouseRoute.decode(device.route)
-                    val matches = route?.houseId in setOf(portalHouse.houseId, houseRoute?.houseId) ||
-                        portalHouse.route.isNotBlank() && device.route.startsWith(portalHouse.route)
-                    if (matches) usedDeviceIds += device.id
-                    matches
-                }
-                val entrances = houseDevices.map { device ->
-                    val route = HouseRoute.decode(device.route)
-                    val porch = housePorches.firstOrNull { candidate ->
-                        candidate.route == device.route ||
-                            route?.porch in setOf(candidate.porchId, candidate.number)
                     }
-                    device.toEntrance(specification.id, houseId, porch).also { entrance ->
-                        doorsByEntrance[entrance.id] = device.toRemoteDoor(specification.id)
-                    }
+                    housesByStreet.getOrPut(streetId, ::mutableListOf) += House(
+                        id = houseId,
+                        streetId = streetId,
+                        label = address.house,
+                        entranceCount = entrances.size,
+                    )
+                    entrancesByHouse[houseId] = entrances
                 }
 
-                if (streets.none { it.id == streetId }) {
-                    streets += Street(
-                        id = streetId,
-                        name = address.street,
-                        locality = Locality(id = localityId, name = localityName),
+                val unusedDevices = devices.filterNot { it.id in usedDeviceIds }
+                if (unusedDevices.isNotEmpty()) {
+                    addUnassignedDevices(
+                        specification = specification,
+                        devices = unusedDevices,
+                        streets = streets,
+                        housesByStreet = housesByStreet,
+                        entrancesByHouse = entrancesByHouse,
+                        doorsByEntrance = doorsByEntrance,
                     )
                 }
-                housesByStreet.getOrPut(streetId, ::mutableListOf) += House(
-                    id = houseId,
-                    streetId = streetId,
-                    label = address.house,
-                    entranceCount = entrances.size,
-                )
-                entrancesByHouse[houseId] = entrances
+                successfulSpecifications++
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                // Неудача компании не скрывает двери, полученные из другой компании.
+                if (error !is PortalRequestException && error !is DomruAuthenticationException &&
+                    error !is PortalProtocolException && error !is SessionStorageException &&
+                    error !is java.io.IOException) throw error
+                failures += error
             }
+        }
 
-            val unusedDevices = devices.filterNot { it.id in usedDeviceIds }
-            if (unusedDevices.isNotEmpty()) {
-                addUnassignedDevices(
-                    specification = specification,
-                    devices = unusedDevices,
-                    streets = streets,
-                    housesByStreet = housesByStreet,
-                    entrancesByHouse = entrancesByHouse,
-                    doorsByEntrance = doorsByEntrance,
-                )
-            }
+        if (successfulSpecifications == 0 && failures.isNotEmpty()) {
+            throw failures.lastOrNull { ru.domru.technics.domain.isVideoRequestRetryable(it) }
+                ?: failures.last()
         }
 
         val countedStreets = streets.map { street ->
@@ -340,6 +359,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
             housesByStreetId = housesByStreet,
             entrancesByHouseId = entrancesByHouse,
             doorsByEntranceId = doorsByEntrance,
+            complete = failures.isEmpty(),
         )
     }
 
@@ -385,6 +405,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
         houseId = houseId,
         label = porch?.number?.let { "Подъезд $it" } ?: name,
         cameraAvailable = cameraAvailable,
+        deviceIdentity = id,
     )
 
     /** Оставляет серверные номера, нужные только для команд двери. */
@@ -392,6 +413,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
         specificationId = specificationId,
         deviceId = id,
         accessControlId = accessControlId,
+        cameraAvailable = cameraAvailable,
     )
 
     /** Добавляет компанию к номеру объекта, чтобы два аккаунта не перепутали записи. */

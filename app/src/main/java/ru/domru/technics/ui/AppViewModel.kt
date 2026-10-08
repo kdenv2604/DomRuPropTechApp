@@ -1,6 +1,11 @@
 package ru.domru.technics.ui
 
 import android.app.Application
+import android.net.ConnectivityManager
+import android.net.Network
+import ru.domru.technics.model.AccessSource
+import ru.domru.technics.domain.VideoReconnect
+import ru.domru.technics.domain.isVideoRequestRetryable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -112,8 +117,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var searchJob: Job? = null
     private var cameraJob: Job? = null
     private var accountCheckJob: Job? = null
+    private var appForeground = false
+    private var cameraPlaybackGeneration = 0L
+    private val connectivity = application.getSystemService(ConnectivityManager::class.java)
+    private var networkCallbackRegistered = false
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            // Новый маршрут интернета требует свежей временной ссылки камеры.
+            viewModelScope.launch { recoverVisibleCamera() }
+        }
+    }
 
     init {
+        networkCallbackRegistered = runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }.isSuccess
         // Сначала проверяем каждый логин. Нерабочий аккаунт не должен ломать общий список.
         if (savedAccounts.isNotEmpty()) checkAccountAccesses(loadAddressesAfter = true)
     }
@@ -176,13 +192,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Открывает форму добавления ещё одного логина. */
     fun showAddLoginAndPassword() {
-        mutableState.update { it.copy(showLogin = true, loginError = null) }
+        // Форма входа скрывает предпросмотр: запрос и его временную ссылку сразу закрываем.
+        cameraJob?.cancel()
+        mutableState.update { it.copy(showLogin = true, loginError = null, cameraStates = emptyMap()) }
     }
 
     /** Закрывает форму, если в приложении уже есть хотя бы один аккаунт. */
     fun cancelAddingLogin() {
         if (mutableState.value.accounts.isNotEmpty()) {
             mutableState.update { it.copy(showLogin = false, loginError = null) }
+            // После скрытия карточки нужна новая ссылка, даже если прежний повтор уже закончился.
+            recoverVisibleCamera()
         }
     }
 
@@ -552,11 +572,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Повторно получает ссылку только для всё ещё раскрытого подъезда. */
     fun retryCamera(entrance: Entrance) {
-        if (mutableState.value.selection.entranceId == entrance.id) loadCameraStream(entrance)
+        if (!isCameraVisible(entrance.id)) return
+        val failedSource = (mutableState.value.cameraStates[entrance.id] as? CameraState.Ready)?.stream?.source
+        loadCameraStream(entrance, failedSource)
+    }
+
+    private fun isCameraVisible(entranceId: String): Boolean = appForeground &&
+        !mutableState.value.showLogin && mutableState.value.selection.entranceId == entranceId
+
+    private fun recoverVisibleCamera() {
+        if (!appForeground || mutableState.value.showLogin) return
+        if (mutableState.value.streets.isEmpty() && mutableState.value.accountStatuses.values.any {
+                it == AccountAccessStatus.UNAVAILABLE
+            }) checkAccountAccesses(loadAddressesAfter = true)
+        val entranceId = mutableState.value.selection.entranceId ?: return
+        val entrance = mutableState.value.entrancesByHouse.values.flatten()
+            .firstOrNull { it.id == entranceId && it.cameraAvailable } ?: return
+        loadCameraStream(entrance)
+    }
+
+    override fun onCleared() {
+        if (networkCallbackRegistered) runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+        super.onCleared()
     }
 
     /** Останавливает видео и убирает код, когда приложение свернули. */
     fun onAppBackgrounded() {
+        appForeground = false
         // Поток и показанный код исчезают, когда приложение ушло с экрана.
         cameraJob?.cancel()
         mutableState.update { it.copy(cameraStates = emptyMap(), shownCode = null) }
@@ -564,12 +606,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** После возврата на экран заново запускает ранее открытую камеру. */
     fun onAppForegrounded() {
-        val entranceId = mutableState.value.selection.entranceId ?: return
-        val entrance = mutableState.value.entrancesByHouse.values
-            .flatten()
-            .firstOrNull { it.id == entranceId && it.cameraAvailable }
-            ?: return
-        if (mutableState.value.cameraStates[entranceId] == null) loadCameraStream(entrance)
+        appForeground = true
+        recoverVisibleCamera()
     }
 
     /** Загружает верхнюю часть общего адресного дерева. */
@@ -642,31 +680,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Получает свежую ссылку камеры и игнорирует результат уже закрытой карточки. */
-    private fun loadCameraStream(entrance: Entrance) {
+    private fun loadCameraStream(entrance: Entrance, failedSource: AccessSource? = null) {
         cameraJob?.cancel()
-        mutableState.update {
-            it.copy(cameraStates = mapOf(entrance.id to CameraState.Loading))
-        }
+        val generation = ++cameraPlaybackGeneration
         cameraJob = viewModelScope.launch {
-            try {
-                val stream = combinedAccess.getCameraStream(activeAccounts(), entrance)
-                if (mutableState.value.selection.entranceId != entrance.id) return@launch
-                val state = stream?.let(CameraState::Ready)
-                    ?: CameraState.Failed("У этой двери нет видеопотока")
-                mutableState.update { it.copy(cameraStates = mapOf(entrance.id to state)) }
-            } catch (error: Throwable) {
-                error.rethrowIfCancellation()
-                if (mutableState.value.selection.entranceId == entrance.id) {
-                    mutableState.update {
-                        it.copy(
-                            cameraStates = mapOf(
-                                entrance.id to CameraState.Failed(safeCameraMessage(error)),
-                            ),
-                        )
-                    }
-                }
+            val stream = VideoReconnect().load(
+                visible = { entrance.cameraAvailable && isCameraVisible(entrance.id) },
+                retryable = ::isVideoRequestRetryable,
+                loading = { mutableState.update { it.copy(cameraStates = mapOf(entrance.id to CameraState.Loading)) } },
+                failed = { error, seconds -> mutableState.update { it.copy(cameraStates = mapOf(entrance.id to
+                    CameraState.Failed(error?.let(::safeCameraMessage) ?: "У этой двери нет видеопотока", seconds))) } },
+                request = { combinedAccess.getCameraStream(videoAccounts(), entrance, failedSource) },
+            )
+            if (stream != null && isCameraVisible(entrance.id)) mutableState.update {
+                it.copy(cameraStates = mapOf(entrance.id to CameraState.Ready(stream, generation)))
             }
         }
+    }
+
+    /** Временный сетевой сбой проверки не отзывает известное разрешение на видео. */
+    private fun videoAccounts(): List<AccountProfile> = mutableState.value.accounts.filter { account ->
+        account.isDemo || mutableState.value.accountStatuses[account.id] in setOf(
+            AccountAccessStatus.ACTIVE, AccountAccessStatus.CHECKING, AccountAccessStatus.UNAVAILABLE,
+        )
     }
 
     /** Загружает сохранённую ветку сверху вниз, потому что каждый следующий список зависит от неё. */

@@ -58,13 +58,15 @@ object AddressHierarchyMerger {
 
     /** Склеивает одинаковые подъезды, сохраняя все способы доступа к двери. */
     fun entrances(parent: House, items: List<Entrance>): List<Entrance> = items
-        .groupBy { AddressSearch.canonical(it.label) }
+        .groupBy { it.deviceIdentity?.let { device -> "device:$device" } ?:
+            "label:${AddressSearch.canonical(it.label)}" }
         .map { (key, group) ->
             Entrance(
                 id = "entrance:${parent.id}:$key",
                 houseId = parent.id,
                 label = group.first().label,
                 cameraAvailable = group.any(Entrance::cameraAvailable),
+                deviceIdentity = group.first().deviceIdentity,
                 sources = group.flatMap(Entrance::sources).distinctSources(),
             )
         }

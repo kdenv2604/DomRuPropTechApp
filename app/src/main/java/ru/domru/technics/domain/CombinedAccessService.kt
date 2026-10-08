@@ -3,8 +3,13 @@ package ru.domru.technics.domain
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CancellationException
 import ru.domru.technics.data.DomruRepository
+import ru.domru.technics.data.DomruAuthenticationException
+import ru.domru.technics.data.AuthenticationFailure
+import ru.domru.technics.data.PortalProtocolException
 import ru.domru.technics.data.PortalRequestException
+import ru.domru.technics.data.SessionStorageException
 import ru.domru.technics.model.AccessSource
 import ru.domru.technics.model.AccountProfile
 import ru.domru.technics.model.AddressSearchResult
@@ -25,65 +30,49 @@ class CombinedAccessService(
     private val retryPolicy: RetryPolicy,
 ) {
     /** Параллельно читает улицы действующих аккаунтов и убирает дубли. */
-    suspend fun loadStreets(accounts: List<AccountProfile>): List<Street> = coroutineScope {
-        val loaded = accounts.map { account ->
-            async {
-                retryPolicy.execute(RequestKind.SAFE_READ, ::isSafeReadRetryable) {
-                    repository.loadStreets(account.id).map { street ->
-                        street.withSourceIfMissing(account.id)
-                    }
-                }
+    suspend fun loadStreets(accounts: List<AccountProfile>): List<Street> {
+        val loaded = readAvailableSources(accounts) { account ->
+            repository.loadStreets(account.id).map { street ->
+                street.withSourceIfMissing(account.id)
             }
-        }.awaitAll().flatten()
-        AddressHierarchyMerger.streets(loaded)
+        }
+        return AddressHierarchyMerger.streets(loaded)
     }
 
     /** Читает дома через каждый аккаунт, который видит выбранную улицу. */
-    suspend fun loadHouses(street: Street): List<House> = coroutineScope {
-        val loaded = street.sources.map { source ->
-            async {
-                retryPolicy.execute(RequestKind.SAFE_READ, ::isSafeReadRetryable) {
-                    repository.loadHouses(source.accountId, source.remoteId).map { house ->
-                        house.withSourceIfMissing(source.accountId)
-                    }
-                }
+    suspend fun loadHouses(street: Street): List<House> {
+        val loaded = readAvailableSources(street.sources) { source ->
+            repository.loadHouses(source.accountId, source.remoteId).map { house ->
+                house.withSourceIfMissing(source.accountId)
             }
-        }.awaitAll().flatten()
-        AddressHierarchyMerger.houses(street, loaded)
+        }
+        return AddressHierarchyMerger.houses(street, loaded)
     }
 
     /** Читает подъезды через каждый доступный источник выбранного дома. */
-    suspend fun loadEntrances(house: House): List<Entrance> = coroutineScope {
-        val loaded = house.sources.map { source ->
-            async {
-                retryPolicy.execute(RequestKind.SAFE_READ, ::isSafeReadRetryable) {
-                    repository.loadEntrances(source.accountId, source.remoteId).map { entrance ->
-                        entrance.withSourceIfMissing(source.accountId)
-                    }
-                }
+    suspend fun loadEntrances(house: House): List<Entrance> {
+        val loaded = readAvailableSources(house.sources) { source ->
+            repository.loadEntrances(source.accountId, source.remoteId).map { entrance ->
+                entrance.withSourceIfMissing(source.accountId)
             }
-        }.awaitAll().flatten()
-        AddressHierarchyMerger.entrances(house, loaded)
+        }
+        return AddressHierarchyMerger.entrances(house, loaded)
     }
 
     /** Ищет сразу во всех действующих аккаунтах и возвращает общий список. */
     suspend fun search(
         accounts: List<AccountProfile>,
         query: String,
-    ): List<AddressSearchResult> = coroutineScope {
-        val loaded = accounts.map { account ->
-            async {
-                retryPolicy.execute(RequestKind.SAFE_READ, ::isSafeReadRetryable) {
-                    repository.search(account.id, query).map { result ->
-                        result.copy(
-                            street = result.street.withSourceIfMissing(account.id),
-                            house = result.house.withSourceIfMissing(account.id),
-                        )
-                    }
-                }
+    ): List<AddressSearchResult> {
+        val loaded = readAvailableSources(accounts) { account ->
+            repository.search(account.id, query).map { result ->
+                result.copy(
+                    street = result.street.withSourceIfMissing(account.id),
+                    house = result.house.withSourceIfMissing(account.id),
+                )
             }
-        }.awaitAll().flatten()
-        AddressHierarchyMerger.searchResults(loaded)
+        }
+        return AddressHierarchyMerger.searchResults(loaded)
     }
 
     /** Выбирает один подходящий аккаунт и никогда не дублирует команду открытия. */
@@ -111,16 +100,71 @@ class CombinedAccessService(
         }
     }
 
-    /** Получает видео через первый действующий доступ к подъезду. */
+    /** Пробует только разрешённые видеоисточники той же физической двери. */
     suspend fun getCameraStream(
         accounts: List<AccountProfile>,
         entrance: Entrance,
+        failedSource: AccessSource? = null,
     ): CameraStream? {
-        val source = preferredSource(accounts, entrance.sources) ?: return null
-        return retryPolicy.execute(RequestKind.SAFE_READ, ::isSafeReadRetryable) {
-            repository.getCameraStream(source.accountId, source.remoteId)
+        if (!entrance.cameraAvailable) return null
+        val authorized = accounts.flatMap { account ->
+            entrance.sources.filter { it.accountId == account.id && it.canVideo }
+        }.distinctBy { it.accountId to it.remoteId }
+        val failedIndex = authorized.indexOfFirst { source ->
+            source.accountId == failedSource?.accountId && source.remoteId == failedSource?.remoteId
         }
+        // После ошибки воспроизведения переходим к следующему разрешённому источнику.
+        // Обычная загрузка сохраняет порядок аккаунтов и не расширяет доступ к двери.
+        val sources = if (failedIndex >= 0) authorized.drop(failedIndex + 1) + authorized.take(failedIndex + 1)
+            else authorized
+        val failures = mutableListOf<Exception>()
+        for (source in sources) {
+            try {
+                val stream = retryPolicy.execute(RequestKind.SAFE_READ, ::isSafeReadRetryable) {
+                    repository.getCameraStream(source.accountId, source.remoteId)
+                }
+                if (stream != null) return stream.copy(source = source)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (!isSourceUnavailable(error)) throw error
+                failures += error
+            }
+        }
+        preferredFailure(failures)?.let { throw it }
+        return null
     }
+
+    /** Сбой одного аккаунта не скрывает объекты, полученные из остальных аккаунтов. */
+    private suspend fun <S, T> readAvailableSources(
+        sources: List<S>,
+        read: suspend (S) -> List<T>,
+    ): List<T> = coroutineScope {
+        val results = sources.map { source ->
+            async {
+                try {
+                    Result.success(retryPolicy.execute(RequestKind.SAFE_READ, ::isSafeReadRetryable) { read(source) })
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    if (!isSourceUnavailable(error)) throw error
+                    Result.failure<List<T>>(error)
+                }
+            }
+        }.awaitAll()
+        if (results.isNotEmpty() && results.none { it.isSuccess }) {
+            throw checkNotNull(preferredFailure(results.mapNotNull { it.exceptionOrNull() as? Exception }))
+        }
+        results.flatMap { it.getOrNull().orEmpty() }
+    }
+
+    private fun isSourceUnavailable(error: Exception): Boolean = error is IOException ||
+        error is PortalRequestException || error is DomruAuthenticationException || error is PortalProtocolException ||
+        error is SessionStorageException
+
+    /** Ответ 403 другого источника не скрывает временный сбой доступной камеры. */
+    private fun preferredFailure(failures: List<Exception>): Exception? =
+        failures.lastOrNull(::isVideoRequestRetryable) ?: failures.lastOrNull()
 
     /**
      * Повторяем только временные неполадки.
@@ -128,6 +172,8 @@ class CombinedAccessService(
      */
     private fun isSafeReadRetryable(error: Throwable): Boolean = when (error) {
         is IOException -> true
+        is SessionStorageException -> true
+        is DomruAuthenticationException -> error.failure == AuthenticationFailure.SERVICE_UNAVAILABLE
         is PortalRequestException -> error.statusCode == 408 ||
             error.statusCode == 425 ||
             error.statusCode == 429 ||
@@ -139,10 +185,11 @@ class CombinedAccessService(
     private fun preferredSource(
         accounts: List<AccountProfile>,
         sources: List<AccessSource>,
+        allowed: (AccessSource) -> Boolean = { true },
     ): AccessSource? {
         // Порядок аккаунтов виден человеку. Первый подходящий аккаунт и используем.
         return accounts.firstNotNullOfOrNull { account ->
-            sources.firstOrNull { it.accountId == account.id }
+            sources.firstOrNull { it.accountId == account.id && allowed(it) }
         }
     }
 
@@ -156,5 +203,5 @@ class CombinedAccessService(
 
     /** Подписывает сырой подъезд аккаунтом, из которого он пришёл. */
     private fun Entrance.withSourceIfMissing(accountId: String): Entrance =
-        if (sources.isEmpty()) copy(sources = listOf(AccessSource(accountId, id))) else this
+        if (sources.isEmpty()) copy(sources = listOf(AccessSource(accountId, id, canVideo = cameraAvailable))) else this
 }

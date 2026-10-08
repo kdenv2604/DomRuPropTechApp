@@ -29,6 +29,7 @@ fun AccountAccessStatus.allowsAccountRecoveryActions(): Boolean =
 data class AccessSource(
     val accountId: String,
     val remoteId: String,
+    val canVideo: Boolean = true,
 )
 
 /** Населённый пункт — это отдельная ступень над улицами. */
@@ -64,6 +65,7 @@ data class Entrance(
     val houseId: String,
     val label: String,
     val cameraAvailable: Boolean,
+    val deviceIdentity: String? = null,
     val sources: List<AccessSource> = emptyList(),
 )
 
@@ -86,6 +88,8 @@ data class TemporalCode(
 data class CameraStream(
     val streamUrl: String,
     val previewUrl: String? = null,
+    val mimeType: String? = null,
+    val source: AccessSource? = null,
 )
 
 /** Состояние камеры одного раскрытого подъезда. */
@@ -95,9 +99,9 @@ sealed interface CameraState {
     /** Приложение получает временную ссылку камеры. */
     data object Loading : CameraState
     /** Ссылка получена, видео можно проигрывать. */
-    data class Ready(val stream: CameraStream) : CameraState
+    data class Ready(val stream: CameraStream, val playbackGeneration: Long = 0) : CameraState
     /** Видео получить не удалось; текст можно безопасно показать человеку. */
-    data class Failed(val message: String) : CameraState
+    data class Failed(val message: String, val retryAfterSeconds: Int? = null) : CameraState
 }
 
 /** Ответ сервера на единственную команду открытия двери. */
