@@ -3,6 +3,7 @@ package ru.domru.technics.data
 import android.content.Context
 import ru.domru.technics.model.AccordionSelection
 import ru.domru.technics.model.ThemeMode
+import ru.domru.technics.model.Handedness
 
 /**
  * Хранит только безобидные настройки экрана.
@@ -20,6 +21,17 @@ class AppPreferences(context: Context) {
     /** Запоминает выбранную человеком тему. */
     fun saveThemeMode(mode: ThemeMode) {
         storage.edit().putString(THEME_KEY, mode.name).apply()
+    }
+
+    /** Старые установки без этой настройки используют правую руку. */
+    fun loadHandedness(): Handedness {
+        val savedName = storage.getString(HANDEDNESS_KEY, null)
+        return Handedness.entries.firstOrNull { it.name == savedName } ?: Handedness.RIGHT
+    }
+
+    /** Настройка руки остаётся после перезапуска и обновления приложения. */
+    fun saveHandedness(handedness: Handedness) {
+        storage.edit().putString(HANDEDNESS_KEY, handedness.name).apply()
     }
 
     /** Запоминает раскрытые адреса. Ссылки камеры и другие временные данные сюда не попадают. */
@@ -44,6 +56,7 @@ class AppPreferences(context: Context) {
     private companion object {
         const val FILE_NAME = "display_preferences"
         const val THEME_KEY = "theme_mode"
+        const val HANDEDNESS_KEY = "handedness"
         const val LOCALITY_KEY = "opened_locality_id"
         const val STREET_KEY = "opened_street_id"
         const val HOUSE_KEY = "opened_house_id"

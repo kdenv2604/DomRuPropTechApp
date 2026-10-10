@@ -3,6 +3,8 @@
 package ru.domru.technics.ui.screens
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,7 +19,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,6 +48,7 @@ import ru.domru.technics.model.AccountProfile
 import ru.domru.technics.model.AccountAccessStatus
 import ru.domru.technics.model.allowsAccountRecoveryActions
 import ru.domru.technics.model.ThemeMode
+import ru.domru.technics.model.Handedness
 import ru.domru.technics.ui.theme.SuccessGreen
 import ru.domru.technics.ui.theme.WarningAmber
 
@@ -60,7 +62,6 @@ fun AccountsSheet(
     onRemoveAccount: (String) -> Unit,
     onRenewPassword: (String) -> Unit,
     onRefreshAccounts: () -> Unit,
-    onOpenSettings: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -111,18 +112,6 @@ fun AccountsSheet(
                 Icon(Icons.Default.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("ДОБАВИТЬ ЛОГИН И ПАРОЛЬ")
-            }
-            Spacer(Modifier.height(10.dp))
-            OutlinedButton(
-                onClick = onOpenSettings,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(18.dp),
-            ) {
-                Icon(Icons.Default.Settings, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("НАСТРОЙКИ")
             }
         }
     }
@@ -301,10 +290,12 @@ fun PasswordRenewalDialog(
     )
 }
 
-/** Только здесь человек может выбрать светлое или тёмное оформление. */
+/** Отдельная панель оформления и управления одной рукой. */
 @Composable
 fun SettingsSheet(
     selectedTheme: ThemeMode,
+    selectedHandedness: Handedness,
+    onHandednessSelected: (Handedness) -> Unit,
     onThemeSelected: (ThemeMode) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -312,11 +303,28 @@ fun SettingsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 32.dp),
         ) {
             Text("Настройки", style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.height(24.dp))
+            Text("Удобная рука", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(10.dp))
+            Handedness.entries.forEach { handedness ->
+                ThemeOption(
+                    title = if (handedness == Handedness.RIGHT) "Правая рука" else "Левая рука",
+                    subtitle = if (handedness == Handedness.RIGHT) {
+                        "Кнопка открытия слева от подписи и кода"
+                    } else {
+                        "Кнопка открытия справа от подписи и кода"
+                    },
+                    selected = selectedHandedness == handedness,
+                    onClick = { onHandednessSelected(handedness) },
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            Spacer(Modifier.height(16.dp))
             Text("Оформление", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(10.dp))
 

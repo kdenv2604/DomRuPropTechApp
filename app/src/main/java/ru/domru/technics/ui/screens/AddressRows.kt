@@ -56,6 +56,7 @@ import ru.domru.technics.model.CameraState
 import ru.domru.technics.model.DoorActionState
 import ru.domru.technics.model.Entrance
 import ru.domru.technics.model.House
+import ru.domru.technics.model.Handedness
 import ru.domru.technics.model.Locality
 import ru.domru.technics.model.Street
 import ru.domru.technics.ui.AppUiState
@@ -276,6 +277,7 @@ fun HouseListRow(house: House, streetName: String, expanded: Boolean, onClick: (
 @Composable
 fun EntranceListRow(
     entrance: Entrance,
+    handedness: Handedness,
     expanded: Boolean,
     cameraState: CameraState,
     doorState: DoorActionState,
@@ -299,20 +301,27 @@ fun EntranceListRow(
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (handedness == Handedness.RIGHT) {
+                    CompactDoorAction(
+                        visible = !expanded && !useStackedLayout,
+                        state = doorState,
+                        enabled = !busy,
+                        onClick = onOpenDoor,
+                        openingOnLeft = true,
+                    )
+                }
                 EntranceTitle(
                     entrance = entrance,
                     expanded = expanded,
                     modifier = Modifier.weight(1f),
                 )
-                AnimatedVisibility(
-                    visible = !expanded && !useStackedLayout,
-                    enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
-                    exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End),
-                ) {
-                    DoorActionButton(
+                if (handedness == Handedness.LEFT) {
+                    CompactDoorAction(
+                        visible = !expanded && !useStackedLayout,
                         state = doorState,
                         enabled = !busy,
                         onClick = onOpenDoor,
+                        openingOnLeft = false,
                     )
                 }
                 EntranceChevron(expanded = expanded, onClick = onToggle)
@@ -323,13 +332,15 @@ fun EntranceListRow(
                 enter = fadeIn() + expandVertically(),
                 exit = fadeOut() + shrinkVertically(),
             ) {
-                Column {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = if (handedness == Handedness.RIGHT) Alignment.Start else Alignment.End,
+                ) {
                     Spacer(Modifier.height(8.dp))
                     DoorActionButton(
                         state = doorState,
                         enabled = !busy,
                         onClick = onOpenDoor,
-                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
@@ -346,6 +357,7 @@ fun EntranceListRow(
                     codeState = codeState,
                     busy = busy,
                     useStackedLayout = useStackedLayout,
+                    handedness = handedness,
                     onOpenDoor = onOpenDoor,
                     onRequestCode = onRequestCode,
                     onRetryCamera = onRetryCamera,
@@ -353,6 +365,29 @@ fun EntranceListRow(
             }
 
             DoorStatusMessage(state = doorState)
+        }
+    }
+}
+
+/** Кнопка в свёрнутой строке появляется с выбранной стороны подписи. */
+@Composable
+private fun CompactDoorAction(
+    visible: Boolean,
+    state: DoorActionState,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    openingOnLeft: Boolean,
+) {
+    val edge = if (openingOnLeft) Alignment.Start else Alignment.End
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + expandHorizontally(expandFrom = edge),
+        exit = fadeOut() + shrinkHorizontally(shrinkTowards = edge),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (!openingOnLeft) Spacer(Modifier.width(8.dp))
+            DoorActionButton(state = state, enabled = enabled, onClick = onClick)
+            if (openingOnLeft) Spacer(Modifier.width(8.dp))
         }
     }
 }
@@ -514,6 +549,7 @@ private fun ExpandedEntranceContent(
     codeState: CodeActionState,
     busy: Boolean,
     useStackedLayout: Boolean,
+    handedness: Handedness,
     onOpenDoor: () -> Unit,
     onRequestCode: () -> Unit,
     onRetryCamera: () -> Unit,
@@ -527,35 +563,27 @@ private fun ExpandedEntranceContent(
         )
         Spacer(Modifier.height(12.dp))
         if (useStackedLayout) {
-            // На крупном шрифте две кнопки стоят одна под другой и не обрезают текст.
-            DoorActionButton(
-                state = doorState,
-                enabled = !busy,
-                onClick = onOpenDoor,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(8.dp))
-            CodeActionButton(
-                state = codeState,
-                enabled = !busy,
-                onClick = onRequestCode,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            // На крупном шрифте тексту хватает места; порядок также повторяет выбор руки.
+            if (handedness == Handedness.RIGHT) {
+                DoorActionButton(doorState, !busy, onOpenDoor, Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                CodeActionButton(codeState, !busy, onRequestCode, Modifier.fillMaxWidth())
+            } else {
+                CodeActionButton(codeState, !busy, onRequestCode, Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                DoorActionButton(doorState, !busy, onOpenDoor, Modifier.fillMaxWidth())
+            }
         } else {
             Row(modifier = Modifier.fillMaxWidth()) {
-                DoorActionButton(
-                    state = doorState,
-                    enabled = !busy,
-                    onClick = onOpenDoor,
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(8.dp))
-                CodeActionButton(
-                    state = codeState,
-                    enabled = !busy,
-                    onClick = onRequestCode,
-                    modifier = Modifier.weight(1f),
-                )
+                if (handedness == Handedness.RIGHT) {
+                    DoorActionButton(doorState, !busy, onOpenDoor, Modifier.weight(1f))
+                    Spacer(Modifier.width(8.dp))
+                    CodeActionButton(codeState, !busy, onRequestCode, Modifier.weight(1f))
+                } else {
+                    CodeActionButton(codeState, !busy, onRequestCode, Modifier.weight(1f))
+                    Spacer(Modifier.width(8.dp))
+                    DoorActionButton(doorState, !busy, onOpenDoor, Modifier.weight(1f))
+                }
             }
         }
         if (codeState is CodeActionState.Failed) {

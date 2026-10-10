@@ -46,6 +46,7 @@ fun DomRuTechnicsApp(viewModel: AppViewModel) {
                 onCancelPasswordRenewal = viewModel::cancelPasswordRenewal,
                 onRenewPassword = viewModel::renewPassword,
                 onThemeModeChange = viewModel::setThemeMode,
+                onHandednessChange = viewModel::setHandedness,
                 onRefreshAddresses = viewModel::refreshAddresses,
                 onSearchChange = viewModel::updateSearchQuery,
                 onSearchResultClick = viewModel::openSearchResult,

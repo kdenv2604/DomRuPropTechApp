@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Button
@@ -60,6 +61,7 @@ import ru.domru.technics.model.House
 import ru.domru.technics.model.Locality
 import ru.domru.technics.model.Street
 import ru.domru.technics.model.ThemeMode
+import ru.domru.technics.model.Handedness
 import ru.domru.technics.ui.AppUiState
 
 /** Экран помнит, какая нижняя панель сейчас открыта. */
@@ -77,6 +79,7 @@ fun WorkScreen(
     onCancelPasswordRenewal: () -> Unit,
     onRenewPassword: (String) -> Unit,
     onThemeModeChange: (ThemeMode) -> Unit,
+    onHandednessChange: (Handedness) -> Unit,
     onRefreshAddresses: () -> Unit,
     onSearchChange: (String) -> Unit,
     onSearchResultClick: (AddressSearchResult) -> Unit,
@@ -125,6 +128,7 @@ fun WorkScreen(
                     },
                     totalAccountCount = state.accounts.size,
                     onAccountsClick = { openSheet = OpenSheet.ACCOUNTS },
+                    onSettingsClick = { openSheet = OpenSheet.SETTINGS },
                 )
             }
             item(key = "search") {
@@ -172,6 +176,7 @@ fun WorkScreen(
                         )
                         is AddressListItem.EntranceRow -> EntranceListRow(
                             entrance = row.entrance,
+                            handedness = state.handedness,
                             expanded = state.selection.entranceId == row.entrance.id,
                             cameraState = state.cameraStates[row.entrance.id]
                                 ?: ru.domru.technics.model.CameraState.Idle,
@@ -203,10 +208,11 @@ fun WorkScreen(
             onRemoveAccount = onRemoveAccount,
             onRenewPassword = onBeginPasswordRenewal,
             onRefreshAccounts = onRefreshAccounts,
-            onOpenSettings = { openSheet = OpenSheet.SETTINGS },
         )
         OpenSheet.SETTINGS -> SettingsSheet(
             selectedTheme = state.themeMode,
+            selectedHandedness = state.handedness,
+            onHandednessSelected = onHandednessChange,
             onThemeSelected = onThemeModeChange,
             onDismiss = { openSheet = null },
         )
@@ -240,6 +246,7 @@ private fun WorkHeader(
     activeAccountCount: Int,
     totalAccountCount: Int,
     onAccountsClick: () -> Unit,
+    onSettingsClick: () -> Unit,
 ) {
     val background = Brush.verticalGradient(
         listOf(MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.background),
@@ -269,6 +276,16 @@ private fun WorkHeader(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 1.dp,
+                ) {
+                    IconButton(onClick = onSettingsClick, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.Settings, contentDescription = "Настройки")
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
                 Surface(
                     modifier = Modifier.clickable(onClick = onAccountsClick),
                     shape = RoundedCornerShape(18.dp),

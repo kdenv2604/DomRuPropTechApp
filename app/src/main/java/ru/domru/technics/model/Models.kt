@@ -3,6 +3,9 @@ package ru.domru.technics.model
 /** Выбранный вид приложения. Первый вариант повторяет настройку самого телефона. */
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
+/** Выбранная рука определяет положение кнопки открытия; по умолчанию — правая. */
+enum class Handedness { RIGHT, LEFT }
+
 /** Короткая карточка аккаунта. Пароля и токенов здесь специально нет. */
 data class AccountProfile(
     val id: String,

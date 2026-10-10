@@ -49,6 +49,7 @@ import ru.domru.technics.model.Locality
 import ru.domru.technics.model.Street
 import ru.domru.technics.model.TemporalCode
 import ru.domru.technics.model.ThemeMode
+import ru.domru.technics.model.Handedness
 
 /** Всё, что сейчас видно на экране, хранится в одном понятном наборе данных. */
 data class AppUiState(
@@ -61,6 +62,7 @@ data class AppUiState(
     val passwordRenewalBusy: Boolean = false,
     val passwordRenewalError: String? = null,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val handedness: Handedness = Handedness.RIGHT,
     val streets: List<Street> = emptyList(),
     val streetsLoading: Boolean = false,
     val housesByStreet: Map<String, List<House>> = emptyMap(),
@@ -99,6 +101,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             accounts = savedAccounts,
             showLogin = savedAccounts.isEmpty(),
             themeMode = preferences.loadThemeMode(),
+            handedness = preferences.loadHandedness(),
             accountStatuses = savedAccounts.associate { account ->
                 account.id to if (account.isDemo) {
                     AccountAccessStatus.ACTIVE
@@ -272,6 +275,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // Переключатель этой настройки показывается только на экране «Настройки».
         preferences.saveThemeMode(mode)
         mutableState.update { it.copy(themeMode = mode) }
+    }
+
+    /** Сохраняет руку и сразу меняет расположение кнопок уже открытых карточек. */
+    fun setHandedness(handedness: Handedness) {
+        preferences.saveHandedness(handedness)
+        mutableState.update { it.copy(handedness = handedness) }
     }
 
     /** Забывает старый каталог и заново читает доступы с сервера. */
