@@ -63,6 +63,7 @@ import ru.domru.technics.model.Street
 import ru.domru.technics.model.ThemeMode
 import ru.domru.technics.model.Handedness
 import ru.domru.technics.ui.AppUiState
+import ru.domru.technics.ui.components.FixedTextScale
 
 /** Экран помнит, какая нижняя панель сейчас открыта. */
 private enum class OpenSheet { ACCOUNTS, SETTINGS }
@@ -261,15 +262,23 @@ private fun WorkHeader(
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    // Дом.ру и адрес служебного портала помогают отличить технический аккаунт.
-                    Text(
-                        "dom.ru/lk.proptech.ru",
-                        color = MaterialTheme.colorScheme.tertiary,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 20.sp,
-                    )
-                    Spacer(Modifier.height(13.dp))
-                    Text("Все двери", style = MaterialTheme.typography.headlineMedium)
+                    FixedTextScale {
+                        // Дом.ру и адрес служебного портала помогают отличить технический аккаунт.
+                        Text(
+                            "Домофон",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "dom.ru/lk.proptech.ru",
+                            color = MaterialTheme.colorScheme.tertiary,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 20.sp,
+                        )
+                        Spacer(Modifier.height(13.dp))
+                        Text("Служебный доступ", style = MaterialTheme.typography.headlineMedium)
+                        }
                     Text(
                         "Доступ есть: $activeAccountCount из $totalAccountCount",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

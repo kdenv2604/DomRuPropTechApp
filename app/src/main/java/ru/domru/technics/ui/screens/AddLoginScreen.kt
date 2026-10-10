@@ -49,6 +49,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ru.domru.technics.ui.components.FixedTextScale
 
 /** Экран добавляет ещё один служебный логин к общему списку доступов. */
 @Composable
@@ -87,13 +88,21 @@ fun AddLoginScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 18.dp),
         ) {
-            // Дом.ру и адрес служебного портала в шапке формы входа.
-            Text(
-                text = "dom.ru/lk.proptech.ru",
-                color = MaterialTheme.colorScheme.tertiary,
-                fontWeight = FontWeight.Black,
-                fontSize = 21.sp,
-            )
+            FixedTextScale {
+                // Дом.ру и адрес служебного портала в шапке формы входа.
+                Text(
+                    "Домофон",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "dom.ru/lk.proptech.ru",
+                    color = MaterialTheme.colorScheme.tertiary,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 21.sp,
+                )
+            }
             Spacer(Modifier.height(42.dp))
             Text(
                 text = if (hasSavedAccounts) {
