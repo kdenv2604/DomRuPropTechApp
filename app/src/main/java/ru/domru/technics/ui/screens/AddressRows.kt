@@ -472,14 +472,13 @@ private fun DoorStatusMessage(state: DoorActionState) {
         Text(
             text = message,
             modifier = Modifier.padding(top = 7.dp, end = 10.dp),
-            color = if (state is DoorActionState.Uncertain) WarningAmber
-            else MaterialTheme.colorScheme.error,
+            color = WarningAmber,
             style = MaterialTheme.typography.labelMedium,
         )
     }
 }
 
-/** Красная кнопка двери меняет цвет только после понятного ответа сервера. */
+/** Открытие зелёное при успехе, оранжевое при ошибке или неподтверждённом ответе. */
 @Composable
 private fun DoorActionButton(
     state: DoorActionState,
@@ -489,7 +488,7 @@ private fun DoorActionButton(
 ) {
     val containerTarget = when (state) {
         DoorActionState.Opened -> SuccessGreen
-        is DoorActionState.Uncertain -> WarningAmber
+        is DoorActionState.Failed, is DoorActionState.Uncertain -> WarningAmber
         else -> MaterialTheme.colorScheme.primary
     }
     val container by animateColorAsState(containerTarget, label = "door-button-color")
@@ -510,8 +509,7 @@ private fun DoorActionButton(
                 color = MaterialTheme.colorScheme.onPrimary,
             )
             DoorActionState.Opened -> Text("ОТКРЫТО")
-            is DoorActionState.Failed -> Text("ЕЩЁ РАЗ")
-            is DoorActionState.Uncertain -> Text("ПРОВЕРИТЬ")
+            is DoorActionState.Failed, is DoorActionState.Uncertain -> Text("ПОВТОРИТЬ")
             DoorActionState.Idle -> Text("ОТКРЫТЬ")
         }
     }

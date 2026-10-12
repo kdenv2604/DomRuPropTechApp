@@ -20,8 +20,8 @@ android {
         applicationId = "ru.domru.technics"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.3.9"
+        versionCode = 14
+        versionName = "0.3.10"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
