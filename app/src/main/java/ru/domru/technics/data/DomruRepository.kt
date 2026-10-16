@@ -1,5 +1,6 @@
 package ru.domru.technics.data
 
+import ru.domru.technics.model.AccountAccessStatus
 import ru.domru.technics.model.AccountProfile
 import ru.domru.technics.model.AddressSearchResult
 import ru.domru.technics.model.CameraStream
@@ -11,6 +12,19 @@ import ru.domru.technics.model.TemporalCode
 
 /** Это общий список действий. Экран не знает, по каким адресам работает сервер. */
 interface DomruRepository {
+    /** Читает сохранённые аккаунты без передачи секретов на экран. */
+    fun savedAccounts(): List<AccountProfile>
+    /** Возвращает вымышленные аккаунты для демонстрационного режима. */
+    fun demoAccounts(): List<AccountProfile>
+    /** Сбрасывает сохранённый в памяти каталог перед обновлением. */
+    fun clearCachedCatalogs()
+    /** Проверяет, разрешены ли сейчас запросы через аккаунт. */
+    suspend fun checkAccess(accountId: String): AccountAccessStatus
+    /** Добавляет пароль к сессии, сохранённой старой версией приложения. */
+    suspend fun savePasswordForAutomaticLogin(accountId: String, password: String): AccountProfile
+    /** Восстанавливает потерянный доступ новым паролем. */
+    suspend fun renewPassword(accountId: String, newPassword: String): AccountProfile
+
     /** Проверяет логин и пароль и возвращает безопасную карточку аккаунта. */
     suspend fun signIn(login: String, password: String): AccountProfile
     /** Завершает серверную сессию и удаляет её с телефона. */
@@ -44,7 +58,8 @@ enum class AuthenticationFailure {
 class DomruAuthenticationException(
     message: String,
     val failure: AuthenticationFailure = AuthenticationFailure.SERVICE_UNAVAILABLE,
-) : IllegalStateException(message)
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)
 
 /** Рабочую сессию нельзя случайно заменить новым паролем. */
 class ActiveSessionPasswordProtectedException : IllegalStateException(

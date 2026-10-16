@@ -10,7 +10,7 @@ import java.io.IOException
 
 /** Проверяет права конкретного источника и независимость каталогов аккаунтов. */
 class VideoCatalogIsolationTest {
-    private class Repository : DomruRepository {
+    private class Repository : DomruRepository by PrototypeDomruRepository() {
         var streets: suspend (String) -> List<Street> = { emptyList() }
         var entrances: suspend (String, String) -> List<Entrance> = { _, _ -> emptyList() }
         val videoRequests = mutableListOf<Pair<String, String>>()

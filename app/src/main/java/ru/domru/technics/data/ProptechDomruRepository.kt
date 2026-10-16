@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import ru.domru.technics.domain.AddressSearch
+import ru.domru.technics.domain.isVideoRequestRetryable
 import ru.domru.technics.model.AccountProfile
 import ru.domru.technics.model.AccountAccessStatus
 import ru.domru.technics.model.AddressSearchResult
@@ -12,33 +13,33 @@ import ru.domru.technics.model.CameraStream
 import ru.domru.technics.model.DoorOpenResult
 import ru.domru.technics.model.Entrance
 import ru.domru.technics.model.House
-import ru.domru.technics.model.Locality
 import ru.domru.technics.model.Street
 import ru.domru.technics.model.TemporalCode
-import ru.domru.technics.model.UNKNOWN_LOCALITY_ID
-import ru.domru.technics.model.UNKNOWN_LOCALITY_NAME
 import java.util.concurrent.ConcurrentHashMap
 
 /** Соединяет настоящий служебный портал, защищённые сессии и экран приложения. */
-class ProptechDomruRepository(context: Context) : DomruRepository {
+class ProptechDomruRepository internal constructor(
+    private val sessionStore: SessionStore,
+    private val oidcClient: OidcSessionClient,
+) : DomruRepository {
+    constructor(context: Context) : this(SecureSessionStore(context), DomruOidcClient())
+
     private val demoRepository = PrototypeDomruRepository()
-    private val sessionStore = SecureSessionStore(context)
-    private val oidcClient = DomruOidcClient()
     private val sessionProvider = DomruSessionProvider(sessionStore, oidcClient)
     private val apiClient = ProptechApiClient(sessionProvider)
     private val catalogs = ConcurrentHashMap<String, RemoteCatalog>()
     private val catalogLocks = ConcurrentHashMap<String, Mutex>()
 
     /** Превращает сохранённые сессии в безопасные карточки без токенов. */
-    fun savedAccounts(): List<AccountProfile> = sessionStore.loadAll().map { session ->
+    override fun savedAccounts(): List<AccountProfile> = sessionStore.loadAll().map { session ->
         session.toProfile()
     }
 
     /** Возвращает вымышленные аккаунты только для отладки интерфейса. */
-    fun demoAccounts(): List<AccountProfile> = demoRepository.demoAccounts()
+    override fun demoAccounts(): List<AccountProfile> = demoRepository.demoAccounts()
 
     /** Забывает старые списки, чтобы кнопка «Обновить» заново спросила сервер. */
-    fun clearCachedCatalogs() {
+    override fun clearCachedCatalogs() {
         catalogs.clear()
     }
 
@@ -51,7 +52,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
      * Проверяет и сохраняет пароль аккаунта из старой версии приложения.
      * Старый пароль прочитать невозможно: прежняя версия его действительно не записывала.
      */
-    suspend fun savePasswordForAutomaticLogin(
+    override suspend fun savePasswordForAutomaticLogin(
         accountId: String,
         password: String,
     ): AccountProfile {
@@ -66,16 +67,15 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
             password = password,
             createdAtMillis = oldSession.createdAtMillis,
         )
-        if (updated.id != accountId) {
-            // Сервер сменил внутренний номер: старая запись больше не должна путать экран.
-            sessionStore.delete(accountId)
+        if (updated.id != accountId && sessionStore.deleteIfUnchanged(oldSession)) {
+            // Убираем прежний номер только если за время входа его запись не заменили.
             catalogs.remove(accountId)
         }
         return updated
     }
 
     /** Проверяет сессию настоящим запросом профиля, не сохраняя и не спрашивая пароль. */
-    suspend fun checkAccess(accountId: String): AccountAccessStatus {
+    override suspend fun checkAccess(accountId: String): AccountAccessStatus {
         if (isDemoAccount(accountId)) return AccountAccessStatus.ACTIVE
         return try {
             apiClient.loadSpecifications(accountId)
@@ -103,7 +103,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
      * Получает новую сессию для уже сохранённого логина.
      * Рабочую сессию этот метод менять отказывается, даже если экран ошибся со статусом.
      */
-    suspend fun renewPassword(accountId: String, newPassword: String): AccountProfile {
+    override suspend fun renewPassword(accountId: String, newPassword: String): AccountProfile {
         val oldSession = sessionStore.find(accountId)
             ?: throw DomruAuthenticationException(
                 "Сохранённый логин не найден",
@@ -128,9 +128,8 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
             password = newPassword,
             createdAtMillis = oldSession.createdAtMillis,
         )
-        if (updated.id != accountId) {
-            // Если сервер сменил внутренний идентификатор, старую битую запись больше не держим.
-            sessionStore.delete(accountId)
+        if (updated.id != accountId && sessionStore.deleteIfUnchanged(oldSession)) {
+            // Новый вход по прежнему номеру не должен исчезнуть вместе со старой записью.
             catalogs.remove(accountId)
         }
         return updated
@@ -142,6 +141,9 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
             return
         }
 
+        // Запоминаем запись до проверки: её ответ и выход могут прийти уже после нового входа.
+        val oldSession = sessionStore.find(accountId)
+            ?: throw PasswordRenewalUnavailableException("Сохранённый логин не найден")
         when (checkAccess(accountId)) {
             AccountAccessStatus.NEEDS_PASSWORD -> Unit
             AccountAccessStatus.ACTIVE -> throw PasswordRenewalUnavailableException(
@@ -152,15 +154,20 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
             )
         }
 
-        val refreshToken = sessionStore.find(accountId)?.refreshToken
+        val refreshToken = oldSession.refreshToken
+        var removed = false
         try {
             if (refreshToken != null) oidcClient.signOut(refreshToken)
         } catch (error: Throwable) {
             // Выход на телефоне должен сработать даже при пропавшем интернете.
             if (error is CancellationException) throw error
         } finally {
-            sessionStore.delete(accountId)
-            catalogs.remove(accountId)
+            removed = sessionStore.deleteIfUnchanged(oldSession)
+            if (removed) catalogs.remove(accountId)
+        }
+        // Проверяем после finally, чтобы не скрыть отмену корутины ошибкой конфликта.
+        if (!removed) {
+            throw PasswordRenewalUnavailableException("Запись аккаунта изменилась. Удаление отменено")
         }
     }
 
@@ -246,10 +253,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
             throw PortalProtocolException("У аккаунта нет доступной служебной компании")
         }
 
-        val streets = mutableListOf<Street>()
-        val housesByStreet = mutableMapOf<String, MutableList<House>>()
-        val entrancesByHouse = mutableMapOf<String, List<Entrance>>()
-        val doorsByEntrance = mutableMapOf<String, RemoteDoor>()
+        val builder = RemoteCatalogBuilder()
 
         var successfulSpecifications = 0
         val failures = mutableListOf<Exception>()
@@ -261,74 +265,7 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
                 val portalHouses = apiClient.loadHouses(accountId, specification)
                 val porches = apiClient.loadPorches(accountId, specification)
                 val devices = apiClient.loadIntercomDevices(accountId, specification)
-                val usedDeviceIds = mutableSetOf<String>()
-
-                portalHouses.forEach { portalHouse ->
-                    val address = RussianAddressParser.parse(portalHouse.address)
-                    // Если город есть в полном адресе, он становится отдельной верхней ступенью.
-                    val localityName = address.locality ?: companyLocality ?: UNKNOWN_LOCALITY_NAME
-                    val localityKey = if (localityName == UNKNOWN_LOCALITY_NAME) {
-                        "unknown"
-                    } else {
-                        AddressSearch.canonicalLocality(localityName)
-                    }
-                    val localityId = remoteId(specification.id, "locality", localityKey)
-                    val streetKey = "$localityKey|${AddressSearch.canonical(address.street)}"
-                    val streetId = remoteId(specification.id, "street", streetKey)
-                    val houseId = remoteId(specification.id, "house", portalHouse.houseId)
-                    val houseRoute = HouseRoute.decode(portalHouse.route)
-                    val housePorches = porches.filter { porch ->
-                        porch.parentRoute == portalHouse.route ||
-                            HouseRoute.decode(porch.route)?.houseId in setOf(
-                                portalHouse.houseId,
-                                houseRoute?.houseId,
-                            )
-                    }
-                    val houseDevices = devices.filter { device ->
-                        val route = HouseRoute.decode(device.route)
-                        val matches = route?.houseId in setOf(portalHouse.houseId, houseRoute?.houseId) ||
-                            portalHouse.route.isNotBlank() && device.route.startsWith(portalHouse.route)
-                        if (matches) usedDeviceIds += device.id
-                        matches
-                    }
-                    val entrances = houseDevices.map { device ->
-                        val route = HouseRoute.decode(device.route)
-                        val porch = housePorches.firstOrNull { candidate ->
-                            candidate.route == device.route ||
-                                route?.porch in setOf(candidate.porchId, candidate.number)
-                        }
-                        device.toEntrance(specification.id, houseId, porch).also { entrance ->
-                            doorsByEntrance[entrance.id] = device.toRemoteDoor(specification.id)
-                        }
-                    }
-
-                    if (streets.none { it.id == streetId }) {
-                        streets += Street(
-                            id = streetId,
-                            name = address.street,
-                            locality = Locality(id = localityId, name = localityName),
-                        )
-                    }
-                    housesByStreet.getOrPut(streetId, ::mutableListOf) += House(
-                        id = houseId,
-                        streetId = streetId,
-                        label = address.house,
-                        entranceCount = entrances.size,
-                    )
-                    entrancesByHouse[houseId] = entrances
-                }
-
-                val unusedDevices = devices.filterNot { it.id in usedDeviceIds }
-                if (unusedDevices.isNotEmpty()) {
-                    addUnassignedDevices(
-                        specification = specification,
-                        devices = unusedDevices,
-                        streets = streets,
-                        housesByStreet = housesByStreet,
-                        entrancesByHouse = entrancesByHouse,
-                        doorsByEntrance = doorsByEntrance,
-                    )
-                }
+                builder.addSpecification(specification, companyLocality, portalHouses, porches, devices)
                 successfulSpecifications++
             } catch (error: CancellationException) {
                 throw error
@@ -342,83 +279,12 @@ class ProptechDomruRepository(context: Context) : DomruRepository {
         }
 
         if (successfulSpecifications == 0 && failures.isNotEmpty()) {
-            throw failures.lastOrNull { ru.domru.technics.domain.isVideoRequestRetryable(it) }
+            throw failures.lastOrNull { isVideoRequestRetryable(it) }
                 ?: failures.last()
         }
 
-        val countedStreets = streets.map { street ->
-            street.copy(houseCount = housesByStreet[street.id].orEmpty().size)
-        }.sortedWith(
-            compareBy(
-                { AddressSearch.canonical(it.locality.name) },
-                { AddressSearch.canonical(it.name) },
-            ),
-        )
-        return RemoteCatalog(
-            streets = countedStreets,
-            housesByStreetId = housesByStreet,
-            entrancesByHouseId = entrancesByHouse,
-            doorsByEntranceId = doorsByEntrance,
-            complete = failures.isEmpty(),
-        )
+        return builder.build(complete = failures.isEmpty())
     }
-
-    /** Не теряет устройства, которые сервер не смог связать с конкретным домом. */
-    private fun addUnassignedDevices(
-        specification: PortalSpecification,
-        devices: List<PortalDevice>,
-        streets: MutableList<Street>,
-        housesByStreet: MutableMap<String, MutableList<House>>,
-        entrancesByHouse: MutableMap<String, List<Entrance>>,
-        doorsByEntrance: MutableMap<String, RemoteDoor>,
-    ) {
-        val streetId = remoteId(specification.id, "street", "other")
-        val houseId = remoteId(specification.id, "house", "other")
-        if (streets.none { it.id == streetId }) {
-            streets += Street(
-                id = streetId,
-                name = "Другие объекты",
-                locality = Locality(UNKNOWN_LOCALITY_ID, UNKNOWN_LOCALITY_NAME),
-            )
-        }
-        val entrances = devices.map { device ->
-            device.toEntrance(specification.id, houseId, porch = null).also { entrance ->
-                doorsByEntrance[entrance.id] = device.toRemoteDoor(specification.id)
-            }
-        }
-        housesByStreet.getOrPut(streetId, ::mutableListOf) += House(
-            id = houseId,
-            streetId = streetId,
-            label = "Без адресной привязки",
-            entranceCount = entrances.size,
-        )
-        entrancesByHouse[houseId] = entrances
-    }
-
-    /** Превращает техническую запись устройства в понятную строку подъезда. */
-    private fun PortalDevice.toEntrance(
-        specificationId: String,
-        houseId: String,
-        porch: PortalPorch?,
-    ): Entrance = Entrance(
-        id = remoteId(specificationId, "door", id),
-        houseId = houseId,
-        label = porch?.number?.let { "Подъезд $it" } ?: name,
-        cameraAvailable = cameraAvailable,
-        deviceIdentity = id,
-    )
-
-    /** Оставляет серверные номера, нужные только для команд двери. */
-    private fun PortalDevice.toRemoteDoor(specificationId: String): RemoteDoor = RemoteDoor(
-        specificationId = specificationId,
-        deviceId = id,
-        accessControlId = accessControlId,
-        cameraAvailable = cameraAvailable,
-    )
-
-    /** Добавляет компанию к номеру объекта, чтобы два аккаунта не перепутали записи. */
-    private fun remoteId(specificationId: String, kind: String, value: String): String =
-        "$specificationId::$kind::$value"
 
     /** Отделяет безопасный демонстрационный режим от настоящего портала. */
     private fun isDemoAccount(accountId: String): Boolean = demoRepository.demoAccounts().any {

@@ -3,6 +3,7 @@ package ru.domru.technics.data
 import kotlinx.coroutines.delay
 import ru.domru.technics.domain.AddressSearch
 import ru.domru.technics.model.AccessSource
+import ru.domru.technics.model.AccountAccessStatus
 import ru.domru.technics.model.AccountProfile
 import ru.domru.technics.model.AddressSearchResult
 import ru.domru.technics.model.CameraStream
@@ -70,6 +71,24 @@ class PrototypeDomruRepository : DomruRepository {
             }
         }
 
+    override fun savedAccounts(): List<AccountProfile> = emptyList()
+
+    override fun clearCachedCatalogs() {
+        // Демонстрационные адреса постоянны и не кешируют ответы сервера.
+    }
+
+    override suspend fun checkAccess(accountId: String): AccountAccessStatus =
+        if (accounts.any { it.id == accountId }) AccountAccessStatus.ACTIVE
+        else AccountAccessStatus.NEEDS_PASSWORD
+
+    override suspend fun savePasswordForAutomaticLogin(accountId: String, password: String): AccountProfile {
+        throw PasswordRenewalUnavailableException("Демонстрационный аккаунт не хранит пароль")
+    }
+
+    override suspend fun renewPassword(accountId: String, newPassword: String): AccountProfile {
+        throw PasswordRenewalUnavailableException("Демонстрационный аккаунт не хранит пароль")
+    }
+
     override suspend fun signIn(login: String, password: String): AccountProfile {
         // Демо-вход не принимает настоящие данные. Им занимается сетевой репозиторий.
         throw DomruAuthenticationException("Демонстрационный вход не принимает логин")
@@ -80,7 +99,7 @@ class PrototypeDomruRepository : DomruRepository {
     }
 
     /** Даёт экрану заранее подготовленные аккаунты без секретных данных. */
-    fun demoAccounts(): List<AccountProfile> = accounts
+    override fun demoAccounts(): List<AccountProfile> = accounts
 
     override suspend fun loadStreets(accountId: String): List<Street> {
         pauseLikeNetwork()

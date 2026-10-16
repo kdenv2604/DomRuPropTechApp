@@ -10,11 +10,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +28,7 @@ import ru.domru.technics.BuildConfig
 import ru.domru.technics.data.AppPreferences
 import ru.domru.technics.data.ActiveSessionPasswordProtectedException
 import ru.domru.technics.data.DomruAuthenticationException
+import ru.domru.technics.data.DomruRepository
 import ru.domru.technics.data.PortalProtocolException
 import ru.domru.technics.data.PortalRequestException
 import ru.domru.technics.data.PasswordRenewalUnavailableException
@@ -89,8 +93,12 @@ sealed interface AppEvent {
  * Получает нажатия с экрана и меняет общее состояние приложения.
  * Экран сам не открывает двери и поэтому не сможет случайно повторить запрос.
  */
-class AppViewModel(application: Application) : AndroidViewModel(application) {
-    private val repository = ProptechDomruRepository(application)
+class AppViewModel internal constructor(
+    application: Application,
+    private val repository: DomruRepository,
+) : AndroidViewModel(application) {
+    constructor(application: Application) : this(application, ProptechDomruRepository(application))
+
     private val retryPolicy = RetryPolicy()
     private val combinedAccess = CombinedAccessService(repository, retryPolicy)
     private val preferences = AppPreferences(application)
@@ -116,8 +124,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val eventChannel = Channel<AppEvent>(capacity = Channel.BUFFERED)
     val events = eventChannel.receiveAsFlow()
 
+    // Все адресные запросы отменяются вместе при смене каталога или аккаунтов.
+    private val addressLoadingJob = SupervisorJob(viewModelScope.coroutineContext[Job])
     private var treeLoadingJob: Job? = null
     private var searchJob: Job? = null
+    private var addressSelectionJob: Job? = null
+    private var restoreSelectionAfterLoad = true
+    private var codeRequestJob: Job? = null
     private var cameraJob: Job? = null
     private var accountCheckJob: Job? = null
     private var appForeground = false
@@ -156,7 +169,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 // Повторный вход тем же логином обновляет его карточку, но не создаёт дубль.
                 val accounts = mutableState.value.accounts
                     .filterNot { it.id == account.id || it.isDemo } + account
-                mutableState.update {
+                resetAddressTree {
                     it.copy(
                         accounts = accounts,
                         showLogin = false,
@@ -165,8 +178,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             .filterKeys { id -> accounts.any { account -> account.id == id } } +
                             (account.id to AccountAccessStatus.ACTIVE),
                     )
-                        .withEmptyAddressTree()
                 }
+                restartPendingAccountCheck()
                 loadCombinedStreetList()
             } catch (error: Throwable) {
                 error.rethrowIfCancellation()
@@ -180,7 +193,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Заменяет настоящие аккаунты вымышленными данными для проверки интерфейса. */
     fun openDemo() {
         if (!BuildConfig.DEBUG) return
-        mutableState.update {
+        resetAddressTree {
             it.copy(
                 accounts = repository.demoAccounts(),
                 showLogin = false,
@@ -188,8 +201,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 accountStatuses = repository.demoAccounts().associate { account ->
                     account.id to AccountAccessStatus.ACTIVE
                 },
-            ).withEmptyAddressTree()
+            )
         }
+        restartPendingAccountCheck()
         loadCombinedStreetList()
     }
 
@@ -197,6 +211,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun showAddLoginAndPassword() {
         // Форма входа скрывает предпросмотр: запрос и его временную ссылку сразу закрываем.
         cameraJob?.cancel()
+        cancelCodeRequest()
         mutableState.update { it.copy(showLogin = true, loginError = null, cameraStates = emptyMap()) }
     }
 
@@ -242,17 +257,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             // Репозиторий ещё раз проверяет защиту прямо перед удалением.
-            val removed = runCatching { repository.signOut(accountId) }.isSuccess
-            if (!removed) {
+            val removalError = try {
+                repository.signOut(accountId)
+                null
+            } catch (error: Throwable) {
+                error.rethrowIfCancellation()
+                error
+            }
+            if (removalError != null) {
                 val latestStatus = repository.checkAccess(accountId)
                 mutableState.update {
                     it.copy(accountStatuses = it.accountStatuses + (accountId to latestStatus))
                 }
-                eventChannel.send(AppEvent.Message("Удаление отменено: доступ не потерян"))
+                val message = (removalError as? PasswordRenewalUnavailableException)?.message
+                    ?: "Удаление отменено: доступ не потерян"
+                eventChannel.send(AppEvent.Message(message))
                 return@launch
             }
             val remainingAccounts = mutableState.value.accounts.filterNot { it.id == accountId }
-            mutableState.update {
+            resetAddressTree {
                 it.copy(
                     accounts = remainingAccounts,
                     showLogin = remainingAccounts.isEmpty(),
@@ -264,8 +287,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     },
                     passwordRenewalBusy = false,
                     passwordRenewalError = null,
-                ).withEmptyAddressTree()
+                )
             }
+            restartPendingAccountCheck()
             if (remainingAccounts.isNotEmpty()) loadCombinedStreetList()
         }
     }
@@ -288,7 +312,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (mutableState.value.streetsLoading || mutableState.value.accounts.isEmpty()) return
         // Очищаем старую копию, иначе кнопка показала бы тот же список из памяти.
         repository.clearCachedCatalogs()
-        mutableState.update { it.withEmptyAddressTree() }
+        resetAddressTree()
         checkAccountAccesses(loadAddressesAfter = true)
     }
 
@@ -357,7 +381,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val accounts = mutableState.value.accounts.map { saved ->
                     if (saved.id == accountId) updated else saved
                 }.distinctBy(AccountProfile::id)
-                mutableState.update {
+                resetAddressTree {
                     it.copy(
                         accounts = accounts,
                         accountStatuses = (it.accountStatuses - accountId) +
@@ -365,8 +389,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         passwordRenewalAccountId = null,
                         passwordRenewalBusy = false,
                         passwordRenewalError = null,
-                    ).withEmptyAddressTree()
+                    )
                 }
+                restartPendingAccountCheck()
                 loadCombinedStreetList()
                 eventChannel.send(AppEvent.Message("Доступ для логина обновлён"))
             } catch (error: Throwable) {
@@ -391,15 +416,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleLocality(locality: Locality) {
         if (mutableState.value.selection.localityId != locality.id) loadLocalityHouses(locality.id)
         val selection = mutableState.value.selection.toggleLocality(locality.id)
-        cameraJob?.cancel()
-        preferences.saveAddressSelection(selection)
-        mutableState.update {
-            it.copy(
-                selection = selection,
-                cameraStates = emptyMap(),
-                shownCode = null,
-            )
-        }
+        selectAddress(selection)
     }
 
     /** Повторяет загрузку адресов улицы после ошибки без лишнего уровня дерева. */
@@ -418,15 +435,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             streetId,
             house.id,
         )
-        cameraJob?.cancel()
-        preferences.saveAddressSelection(selection)
-        mutableState.update {
-            it.copy(
-                selection = selection,
-                cameraStates = emptyMap(),
-                shownCode = null,
-            )
-        }
+        selectAddress(selection)
         if (
             opening &&
             mutableState.value.entrancesByHouse[house.id] == null &&
@@ -447,7 +456,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             houseId,
             entrance.id,
         )
+        selectAddress(selection)
+        if (opening && entrance.cameraAvailable) loadCameraStream(entrance)
+    }
+
+    /** Смена ветки закрывает предыдущую камеру и код, затем сохраняет выбор. */
+    private fun selectAddress(selection: AccordionSelection) {
+        restoreSelectionAfterLoad = false
+        addressSelectionJob?.cancel()
         cameraJob?.cancel()
+        cancelCodeRequest()
         preferences.saveAddressSelection(selection)
         mutableState.update {
             it.copy(
@@ -456,7 +474,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 shownCode = null,
             )
         }
-        if (opening && entrance.cameraAvailable) loadCameraStream(entrance)
     }
 
     /** Ждёт окончания набора и запускает один общий поиск по аккаунтам. */
@@ -467,7 +484,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         searchJob?.cancel()
         if (query.isBlank()) return
 
-        searchJob = viewModelScope.launch {
+        searchJob = viewModelScope.launch(addressLoadingJob) {
             // Ждём, пока человек допечатает слово, и только потом обращаемся к серверу.
             delay(240)
             try {
@@ -477,6 +494,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (error: Throwable) {
                 error.rethrowIfCancellation()
+                ensureActive()
                 mutableState.update { it.copy(searchBusy = false) }
                 eventChannel.send(AppEvent.Message("Поиск сейчас недоступен"))
             }
@@ -485,7 +503,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Загружает найденный адрес и раскрывает его до уровня дома. */
     fun openSearchResult(result: AddressSearchResult) {
-        viewModelScope.launch {
+        restoreSelectionAfterLoad = false
+        addressSelectionJob?.cancel()
+        cancelCodeRequest()
+        addressSelectionJob = viewModelScope.launch(addressLoadingJob) {
             mutableState.update { it.copy(searchQuery = "", searchResults = emptyList()) }
             try {
                 val houses = combinedAccess.loadHouses(result.street)
@@ -511,6 +532,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (error: Throwable) {
                 error.rethrowIfCancellation()
+                ensureActive()
                 eventChannel.send(AppEvent.Message("Не удалось открыть найденный адрес"))
             }
         }
@@ -549,13 +571,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val codeState = mutableState.value.codeActions[entrance.id]
         if (doorState == DoorActionState.Sending || codeState == CodeActionState.Loading) return
 
+        cancelCodeRequest()
         // Код тоже запрашиваем только один раз, даже если человек быстро нажал дважды.
         mutableState.update {
             it.copy(codeActions = it.codeActions + (entrance.id to CodeActionState.Loading))
         }
-        viewModelScope.launch {
+        codeRequestJob = viewModelScope.launch {
             try {
                 val code = combinedAccess.getTemporalCode(activeAccounts(), entrance)
+                ensureActive()
                 if (code == null) {
                     setCodeError(entrance.id, "Код недоступен")
                 } else {
@@ -568,8 +592,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (error: Throwable) {
                 error.rethrowIfCancellation()
+                ensureActive()
                 setCodeError(entrance.id, safeCodeMessage(error))
             }
+        }
+    }
+
+    /** Отмена не оставляет закрытую карточку в состоянии ожидания ответа. */
+    private fun cancelCodeRequest() {
+        codeRequestJob?.cancel()
+        codeRequestJob = null
+        mutableState.update {
+            it.copy(
+                codeActions = it.codeActions.filterValues { action -> action != CodeActionState.Loading },
+                shownCode = null,
+            )
         }
     }
 
@@ -591,9 +628,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun recoverVisibleCamera() {
         if (!appForeground || mutableState.value.showLogin) return
-        if (mutableState.value.streets.isEmpty() && mutableState.value.accountStatuses.values.any {
-                it == AccountAccessStatus.UNAVAILABLE
-            }) checkAccountAccesses(loadAddressesAfter = true)
+        val current = mutableState.value
+        val hasUnavailableAccounts = AccountAccessStatus.UNAVAILABLE in current.accountStatuses.values
+        if (current.streets.isEmpty() && hasUnavailableAccounts) {
+            checkAccountAccesses(loadAddressesAfter = true)
+        }
         val entranceId = mutableState.value.selection.entranceId ?: return
         val entrance = mutableState.value.entrancesByHouse.values.flatten()
             .firstOrNull { it.id == entranceId && it.cameraAvailable } ?: return
@@ -610,6 +649,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         appForeground = false
         // Поток и показанный код исчезают, когда приложение ушло с экрана.
         cameraJob?.cancel()
+        cancelCodeRequest()
         mutableState.update { it.copy(cameraStates = emptyMap(), shownCode = null) }
     }
 
@@ -622,7 +662,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Загружает верхнюю часть общего адресного дерева. */
     private fun loadCombinedStreetList() {
         treeLoadingJob?.cancel()
-        treeLoadingJob = viewModelScope.launch {
+        treeLoadingJob = viewModelScope.launch(addressLoadingJob) {
             mutableState.update { it.copy(streetsLoading = true) }
             try {
                 val accounts = activeAccounts()
@@ -632,9 +672,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val streets = combinedAccess.loadStreets(accounts)
                 mutableState.update { it.copy(streets = streets, streetsLoading = false) }
-                restoreSavedAddressSelection(streets)
+                // Выбор, сделанный во время загрузки улиц, важнее сохранённой ветки.
+                if (!restoreSelectionAfterLoad) return@launch
+                restoreSelectionAfterLoad = false
+                addressSelectionJob?.cancel()
+                addressSelectionJob = viewModelScope.launch(addressLoadingJob) {
+                    try {
+                        restoreSavedAddressSelection(streets)
+                    } catch (error: Throwable) {
+                        error.rethrowIfCancellation()
+                        ensureActive()
+                        eventChannel.send(AppEvent.Message(safeAddressLoadMessage(error)))
+                    }
+                }
             } catch (error: Throwable) {
                 error.rethrowIfCancellation()
+                ensureActive()
                 mutableState.update { it.copy(streetsLoading = false) }
                 eventChannel.send(AppEvent.Message(safeAddressLoadMessage(error)))
             }
@@ -645,7 +698,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadCombinedHouseList(street: Street) {
         if (street.id in mutableState.value.loadingStreetIds) return
         mutableState.update { it.copy(loadingStreetIds = it.loadingStreetIds + street.id) }
-        viewModelScope.launch {
+        viewModelScope.launch(addressLoadingJob) {
             try {
                 val houses = combinedAccess.loadHouses(street)
                 mutableState.update {
@@ -656,6 +709,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (error: Throwable) {
                 error.rethrowIfCancellation()
+                ensureActive()
                 mutableState.update { it.copy(loadingStreetIds = it.loadingStreetIds - street.id) }
                 eventChannel.send(AppEvent.Message("Не удалось загрузить дома"))
             }
@@ -664,13 +718,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Город сразу показывает все свои дома; отдельного раскрытия улицы больше нет. */
     private fun loadLocalityHouses(localityId: String, excludeStreet: String? = null) {
-        mutableState.value.streets.filter { it.locality.id == localityId && it.id != excludeStreet &&
-            mutableState.value.housesByStreet[it.id] == null }.forEach(::loadCombinedHouseList)
+        val current = mutableState.value
+        current.streets.filter { street ->
+            street.locality.id == localityId &&
+                street.id != excludeStreet &&
+                current.housesByStreet[street.id] == null
+        }.forEach(::loadCombinedHouseList)
     }
 
     /** Загружает и кладёт в состояние подъезды одного общего дома. */
     private fun loadCombinedEntranceList(house: House) {
-        viewModelScope.launch {
+        viewModelScope.launch(addressLoadingJob) {
             mutableState.update { it.copy(loadingHouseIds = it.loadingHouseIds + house.id) }
             try {
                 val entrances = combinedAccess.loadEntrances(house)
@@ -682,6 +740,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (error: Throwable) {
                 error.rethrowIfCancellation()
+                ensureActive()
                 mutableState.update { it.copy(loadingHouseIds = it.loadingHouseIds - house.id) }
                 eventChannel.send(AppEvent.Message("Не удалось загрузить подъезды"))
             }
@@ -696,13 +755,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val stream = VideoReconnect().load(
                 visible = { entrance.cameraAvailable && isCameraVisible(entrance.id) },
                 retryable = ::isVideoRequestRetryable,
-                loading = { mutableState.update { it.copy(cameraStates = mapOf(entrance.id to CameraState.Loading)) } },
-                failed = { error, seconds -> mutableState.update { it.copy(cameraStates = mapOf(entrance.id to
-                    CameraState.Failed(error?.let(::safeCameraMessage) ?: "У этой двери нет видеопотока", seconds))) } },
+                loading = {
+                    mutableState.update {
+                        it.copy(cameraStates = mapOf(entrance.id to CameraState.Loading))
+                    }
+                },
+                failed = { error, seconds ->
+                    val failure = CameraState.Failed(
+                        message = error?.let(::safeCameraMessage) ?: "У этой двери нет видеопотока",
+                        retryAfterSeconds = seconds,
+                    )
+                    mutableState.update { it.copy(cameraStates = mapOf(entrance.id to failure)) }
+                },
                 request = { combinedAccess.getCameraStream(videoAccounts(), entrance, failedSource) },
             )
-            if (stream != null && isCameraVisible(entrance.id)) mutableState.update {
-                it.copy(cameraStates = mapOf(entrance.id to CameraState.Ready(stream, generation)))
+            if (stream != null && isCameraVisible(entrance.id)) {
+                mutableState.update {
+                    it.copy(cameraStates = mapOf(entrance.id to CameraState.Ready(stream, generation)))
+                }
             }
         }
     }
@@ -874,9 +944,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Проверяет логины параллельно и по желанию обновляет адресное дерево. */
-    private fun checkAccountAccesses(loadAddressesAfter: Boolean) {
+    private fun checkAccountAccesses(
+        loadAddressesAfter: Boolean,
+        accounts: List<AccountProfile> = mutableState.value.accounts,
+    ) {
         if (accountCheckJob?.isActive == true) return
-        val accounts = mutableState.value.accounts
         if (accounts.isEmpty()) return
         mutableState.update { state ->
             state.copy(
@@ -895,13 +967,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     async { account.id to repository.checkAccess(account.id) }
                 }.awaitAll().toMap()
             }
+            ensureActive()
             mutableState.update { it.copy(accountStatuses = it.accountStatuses + statuses) }
             if (loadAddressesAfter) {
                 repository.clearCachedCatalogs()
-                mutableState.update { it.withEmptyAddressTree() }
+                resetAddressTree()
                 loadCombinedStreetList()
             }
         }
+    }
+
+    /** Новый вход уже проверен; остальные незавершённые проверки запускаем заново. */
+    private fun restartPendingAccountCheck() {
+        if (accountCheckJob?.isActive != true) return
+        accountCheckJob?.cancel()
+        accountCheckJob = null
+        val pendingAccounts = mutableState.value.accounts.filter {
+            mutableState.value.accountStatuses[it.id] == AccountAccessStatus.CHECKING
+        }
+        checkAccountAccesses(loadAddressesAfter = true, accounts = pendingAccounts)
     }
 
     /** Переводит ошибку камеры в понятный текст. */
@@ -926,6 +1010,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
+    /** Отменяет чтение старого каталога до очистки его данных и индикаторов загрузки. */
+    private fun resetAddressTree(updateState: (AppUiState) -> AppUiState = { it }) {
+        addressLoadingJob.cancelChildren()
+        restoreSelectionAfterLoad = true
+        cameraJob?.cancel()
+        cancelCodeRequest()
+        mutableState.update { updateState(it).withEmptyAddressTree() }
+    }
+
     /** Очищает адреса и временные действия, но оставляет аккаунты и тему. */
     private fun AppUiState.withEmptyAddressTree(): AppUiState = copy(
         streets = emptyList(),
@@ -938,7 +1031,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         searchQuery = "",
         searchResults = emptyList(),
         searchBusy = false,
-        doorActions = emptyMap(),
+        // Уже отправленная команда остаётся заблокированной до ответа сервера.
+        doorActions = doorActions.filterValues { it == DoorActionState.Sending },
         codeActions = emptyMap(),
         cameraStates = emptyMap(),
         shownCode = null,

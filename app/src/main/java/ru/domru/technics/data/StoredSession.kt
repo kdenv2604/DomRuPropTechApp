@@ -38,4 +38,8 @@ internal interface SessionStore {
     fun find(accountId: String): StoredSession?
     fun save(session: StoredSession)
     fun delete(accountId: String)
+    /** Атомарно сохраняет результат только пока исходная запись не заменена или удалена. */
+    fun saveIfUnchanged(expected: StoredSession, updated: StoredSession): Boolean
+    /** Атомарно удаляет только ту запись, для которой было подтверждено окончание доступа. */
+    fun deleteIfUnchanged(expected: StoredSession): Boolean
 }

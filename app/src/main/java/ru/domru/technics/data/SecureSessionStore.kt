@@ -22,28 +22,18 @@ internal class SecureSessionStore(context: Context) : SessionStore {
         Context.MODE_PRIVATE,
     )
 
-    /** Читает все целые записи, а безнадёжно повреждённые аккуратно убирает. */
+    /** Читает доступные записи, сохраняя нечитаемые для следующей попытки. */
     @Synchronized
-    override fun loadAll(): List<StoredSession> {
-        val brokenKeys = mutableListOf<String>()
-        val sessions = preferences.all.mapNotNull { (key, storedValue) ->
-            if (!key.startsWith(SESSION_PREFIX) || storedValue !is String) return@mapNotNull null
-            try {
-                decodeSession(decrypt(storedValue))
-            } catch (_: Exception) {
-                // Повреждённую зашифрованную запись нельзя безопасно восстановить догадками.
-                brokenKeys += key
-                null
-            }
-        }.sortedBy(StoredSession::createdAtMillis)
-
-        if (brokenKeys.isNotEmpty()) {
-            preferences.edit().also { editor ->
-                brokenKeys.forEach(editor::remove)
-            }.apply()
+    override fun loadAll(): List<StoredSession> = preferences.all.mapNotNull { (key, storedValue) ->
+        if (!key.startsWith(SESSION_PREFIX) || storedValue !is String) return@mapNotNull null
+        try {
+            decodeSession(decrypt(storedValue))
+        } catch (_: Exception) {
+            // По ошибке чтения нельзя отличить повреждение записи от временного сбоя Keystore.
+            // Удаление здесь могло бы безвозвратно стереть действующий пароль и токены.
+            null
         }
-        return sessions
-    }
+    }.sortedBy(StoredSession::createdAtMillis)
 
     /** Ищет одну сессию по внутреннему номеру аккаунта. */
     @Synchronized
@@ -69,6 +59,23 @@ internal class SecureSessionStore(context: Context) : SessionStore {
     @Synchronized
     override fun delete(accountId: String) {
         preferences.edit().remove(sessionKey(accountId)).apply()
+    }
+
+    /** Проверка и запись идут под тем же замком, что и обычное сохранение нового входа. */
+    @Synchronized
+    override fun saveIfUnchanged(expected: StoredSession, updated: StoredSession): Boolean {
+        require(expected.accountId == updated.accountId)
+        if (find(expected.accountId) != expected) return false
+        save(updated)
+        return true
+    }
+
+    /** Запоздалый выход не должен удалить сессию, полученную новым явным входом. */
+    @Synchronized
+    override fun deleteIfUnchanged(expected: StoredSession): Boolean {
+        if (find(expected.accountId) != expected) return false
+        delete(expected.accountId)
+        return true
     }
 
     /** Шифрует текст новым случайным вектором и кладёт вектор рядом с шифром. */

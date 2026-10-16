@@ -14,8 +14,16 @@ internal object RussianAddressParser {
         val cleanAddress = address.trim().ifBlank { "Адрес не указан" }
         val chunks = cleanAddress.split(',').map(String::trim).filter(String::isNotBlank)
         if (chunks.size >= 2) {
-            val houseStart = chunks.indexOfFirst(::looksLikeHousePart).takeIf { it > 0 }
+            var houseStart = chunks.indexOfFirst(::looksLikeHousePart).takeIf { it > 0 }
                 ?: chunks.lastIndex
+            // В адресе «улица, 12, корпус 1» номер без «д.» относится к дому, а не к улице.
+            // Проверяем весь фрагмент, чтобы не принять за номер улицу «8 Марта».
+            if (
+                houseStart > 1 && chunks[houseStart].startsWith("корпус", ignoreCase = true) &&
+                BARE_HOUSE_NUMBER.matches(chunks[houseStart - 1])
+            ) {
+                houseStart--
+            }
             val addressChunks = chunks.take(houseStart)
             val streetStart = findStreetStart(addressChunks)
             val locality = findLocality(addressChunks, streetStart)
@@ -66,6 +74,7 @@ internal object RussianAddressParser {
     }
 
     private val HOUSE_PREFIX = Regex("(?iu)^(д\\.?|дом|владение|корпус)\\s*\\d")
+    private val BARE_HOUSE_NUMBER = Regex("(?iu)\\d+[а-яa-z]?(?:[/-]\\d+[а-яa-z]?)?")
     private val STREET_PREFIX = Regex(
         "(?iu)^(ул\\.?|улица|проспект|пр\\.?-?т|переулок|пер\\.?|бульвар|" +
             "бул\\.?|шоссе|набережная|наб\\.?|площадь|пл\\.?|проезд|тракт|" +

@@ -32,8 +32,13 @@ internal class DomruSessionProvider(
                     refreshToken = refreshed.refreshToken,
                     accessTokenExpiresAtMillis = refreshed.accessTokenExpiresAtMillis,
                 )
-                sessionStore.save(updated)
-                return@withLock updated.accessToken
+                // Пока сервер отвечал, человек мог сохранить новый пароль или удалить аккаунт.
+                // Такой результат больше не имеет права заменять текущую запись.
+                return@withLock if (sessionStore.saveIfUnchanged(session, updated)) {
+                    updated.accessToken
+                } else {
+                    requireSession(accountId).accessToken
+                }
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
                 // Причина может быть не только 401: сервер иногда отвечает общим сбоем.
@@ -41,6 +46,8 @@ internal class DomruSessionProvider(
             }
         }
 
+        val current = requireSession(accountId)
+        if (current != session) return@withLock current.accessToken
         automaticSignIn(session).accessToken
     }
 
@@ -68,24 +75,43 @@ internal class DomruSessionProvider(
             )
         var lastError: Throwable? = null
         repeat(MAX_AUTOMATIC_LOGIN_ATTEMPTS) { index ->
+            // Проверяем и после паузы: старый пароль не нужен, если уже появился новый вход.
+            val current = requireSession(oldSession.accountId)
+            if (current != oldSession) return current
             try {
                 val authorized = oidcClient.signIn(oldSession.login, password)
                 // Старый внутренний номер оставляем, чтобы открытый экран не потерял аккаунт.
-                return oldSession.copy(
+                val updated = oldSession.copy(
                     title = authorized.title,
                     login = authorized.login,
                     accessToken = authorized.accessToken,
                     refreshToken = authorized.refreshToken,
                     password = password,
                     accessTokenExpiresAtMillis = authorized.accessTokenExpiresAtMillis,
-                ).also(sessionStore::save)
+                )
+                return if (sessionStore.saveIfUnchanged(oldSession, updated)) {
+                    updated
+                } else {
+                    requireSession(oldSession.accountId)
+                }
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
+                // Поздний отказ относится к прежней записи и не отменяет успешный новый вход.
+                val latest = requireSession(oldSession.accountId)
+                if (latest != oldSession) return latest
                 lastError = error
                 // Явный отказ означает, что те же данные повторять бессмысленно и небезопасно.
                 if (error.isDefinitiveLoginRejection()) throw error
                 val hasNextAttempt = index + 1 < MAX_AUTOMATIC_LOGIN_ATTEMPTS
-                if (!hasNextAttempt) throw error
+                if (!hasNextAttempt) {
+                    // Внешние повторы чтения не должны запускать ещё три серии автовхода.
+                    if (error is DomruAuthenticationException) throw error
+                    throw DomruAuthenticationException(
+                        "Сервер входа временно недоступен",
+                        AuthenticationFailure.SERVICE_UNAVAILABLE,
+                        cause = error,
+                    )
+                }
                 pause(if (index == 0) FIRST_RETRY_DELAY_MILLIS else SECOND_RETRY_DELAY_MILLIS)
             }
         }

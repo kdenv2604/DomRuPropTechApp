@@ -8,8 +8,11 @@ internal data class HouseRoute(
     companion object {
         /** Разбирает строку портала; непонятную строку не угадывает и возвращает null. */
         fun decode(value: String): HouseRoute? {
-            val parts = value.split('.').filter(String::isNotBlank)
-            if (parts.size < 3 || parts.first() !in setOf("1", "2")) return null
+            // Пустой сегмент внутри пути нельзя удалять: иначе номер подъезда станет номером дома.
+            val parts = value.trimEnd('.').split('.')
+            if (parts.size < 3 || parts.first() !in setOf("1", "2") || parts.any(String::isBlank)) {
+                return null
+            }
             return HouseRoute(
                 houseId = parts[2],
                 porch = parts.getOrNull(3),

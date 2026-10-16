@@ -32,4 +32,44 @@ class RussianAddressParserTest {
         assertEquals("ул. Адоратского", parts.street)
         assertEquals("Дом 9", parts.house)
     }
+
+    @Test
+    fun `номер без префикса остаётся вместе с корпусом`() {
+        listOf("12", "12А", "12/1", "12-1").forEach { number ->
+            val parts = RussianAddressParser.parse("г. Казань, ул. Ленина, $number, корпус 1")
+
+            assertEquals("г. Казань", parts.locality)
+            assertEquals("ул. Ленина", parts.street)
+            assertEquals("Дом $number, корпус 1", parts.house)
+        }
+    }
+
+    @Test
+    fun `номер с корпусом разбирается и без города`() {
+        val parts = RussianAddressParser.parse("Ленина, 12, корпус 1")
+
+        assertEquals(null, parts.locality)
+        assertEquals("Ленина", parts.street)
+        assertEquals("Дом 12, корпус 1", parts.house)
+    }
+
+    @Test
+    fun `числа в названии улицы не становятся номером дома`() {
+        listOf("8 Марта", "50 лет Октября", "улица 1905 года").forEach { street ->
+            val parts = RussianAddressParser.parse("г. Казань, $street, 12, корпус 1")
+
+            assertEquals("г. Казань", parts.locality)
+            assertEquals(street, parts.street)
+            assertEquals("Дом 12, корпус 1", parts.house)
+        }
+    }
+
+    @Test
+    fun `название улицы перед корпусом не считается номером`() {
+        val parts = RussianAddressParser.parse("г. Казань, 8 Марта, корпус 1")
+
+        assertEquals("г. Казань", parts.locality)
+        assertEquals("8 Марта", parts.street)
+        assertEquals("Дом корпус 1", parts.house)
+    }
 }

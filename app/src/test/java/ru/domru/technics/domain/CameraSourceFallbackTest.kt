@@ -12,7 +12,7 @@ class CameraSourceFallbackTest {
     private val door = Entrance("merged", "house", "Door", true, deviceIdentity = "device",
         sources = listOf(AccessSource("first", "first-door"), AccessSource("second", "second-door")))
     private val stream = CameraStream("https://camera.example.test/playlist.m3u8")
-    private class Repository(val video: suspend (String, String) -> CameraStream?) : DomruRepository {
+    private class Repository(val video: suspend (String, String) -> CameraStream?) : DomruRepository by PrototypeDomruRepository() {
         val requests = mutableListOf<Pair<String, String>>()
         override suspend fun getCameraStream(accountId: String, entranceId: String): CameraStream? {
             requests += accountId to entranceId

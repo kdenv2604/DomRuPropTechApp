@@ -30,13 +30,26 @@ class VideoReconnect(private val wait: suspend (Long) -> Unit = { delay(it) }) {
         while (visible()) {
             loading()
             var error: Throwable? = null
-            val result = try { request() }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (cause: Exception) { error = cause; null }
+            val result = try {
+                request()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Exception) {
+                error = cause
+                null
+            }
             if (!visible()) return null
             if (result != null) return result
-            val seconds = if (error != null && !retryable(error)) null else when (failures++) {
-                0 -> 2; 1 -> 4; 2 -> 8; 3 -> 15; else -> 30
+            val seconds = if (error != null && !retryable(error)) {
+                null
+            } else {
+                when (failures++) {
+                    0 -> 2
+                    1 -> 4
+                    2 -> 8
+                    3 -> 15
+                    else -> 30
+                }
             }
             failed(error, seconds)
             if (seconds == null) return null

@@ -6,7 +6,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
 import ru.domru.technics.data.DomruRepository
 import ru.domru.technics.data.DomruAuthenticationException
-import ru.domru.technics.data.AuthenticationFailure
 import ru.domru.technics.data.PortalProtocolException
 import ru.domru.technics.data.PortalRequestException
 import ru.domru.technics.data.SessionStorageException
@@ -173,7 +172,8 @@ class CombinedAccessService(
     private fun isSafeReadRetryable(error: Throwable): Boolean = when (error) {
         is IOException -> true
         is SessionStorageException -> true
-        is DomruAuthenticationException -> error.failure == AuthenticationFailure.SERVICE_UNAVAILABLE
+        // Восстановление сессии уже исчерпало свои попытки внутри DomruSessionProvider.
+        is DomruAuthenticationException -> false
         is PortalRequestException -> error.statusCode == 408 ||
             error.statusCode == 425 ||
             error.statusCode == 429 ||
