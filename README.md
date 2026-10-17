@@ -1,10 +1,15 @@
 # Дом.ру — служебный доступ
 
 [![Проверка Android-проекта](https://github.com/kdenv2604/DomRuPropTechApp/actions/workflows/android.yml/badge.svg)](https://github.com/kdenv2604/DomRuPropTechApp/actions/workflows/android.yml)
+[![Проверка iOS-проекта](https://github.com/kdenv2604/DomRuPropTechApp/actions/workflows/ios.yml/badge.svg)](https://github.com/kdenv2604/DomRuPropTechApp/actions/workflows/ios.yml)
 [![Последняя версия](https://img.shields.io/github/v/release/kdenv2604/DomRuPropTechApp?label=версия)](https://github.com/kdenv2604/DomRuPropTechApp/releases/latest)
 
-Нативный Android-клиент для сотрудников, которые обслуживают дома: электриков,
-сантехников и других технических специалистов.
+Нативные приложения для **Android и iOS**, которые объединяют доступы нескольких
+служебных аккаунтов `lk.proptech.ru` в одном списке домов и подъездов. Для сотрудников,
+обслуживающих дома: открытие двери, получение действующего кода и просмотр камеры.
+
+Два самостоятельных клиента в одном репозитории: **Kotlin / Jetpack Compose**
+и **Swift / SwiftUI**. Интерфейс и основные правила работы согласованы между платформами.
 
 > **Важно:** это независимый неофициальный проект. Он не является продуктом
 > Дом.ру, ЭР-Телеком или PropTech и не выдаёт себя за официальное приложение.
@@ -13,7 +18,7 @@
 В списке приложений отображается «Дом.ру — служебный доступ», в шапках экранов —
 «Домофон» и `dom.ru/lk.proptech.ru`. Главный экран называется «Служебный доступ».
 
-Последняя опубликованная версия — **0.3.11 (сборка 15)**. [Скачать APK](https://github.com/kdenv2604/DomRuPropTechApp/releases/download/v0.3.11/lk.proptech.ru-debug-0.3.11.apk).
+Последняя опубликованная Android-версия — **0.3.11 (сборка 15)**. [Скачать APK](https://github.com/kdenv2604/DomRuPropTechApp/releases/download/v0.3.11/lk.proptech.ru-debug-0.3.11.apk).
 Обновление устанавливается поверх предыдущих версий с сохранением логинов,
 паролей и настроек. Настройки открываются шестерёнкой, расположение кнопок
 выбирается для правой или левой руки. Заголовки имеют фиксированный размер
@@ -22,7 +27,34 @@
 При неудачном открытии кнопка становится оранжевой с надписью «ПОВТОРИТЬ»,
 а сообщение под ней также отображается оранжевым.
 
-## Что уже работает
+## Платформы и статус
+
+| Платформа | Технологии и исходники | Установка |
+|---|---|---|
+| Android 8.0+ | Kotlin / Jetpack Compose, [`android/`](android/) | Готовый APK в [релизах](https://github.com/kdenv2604/DomRuPropTechApp/releases/latest) |
+| iOS 15+ | Swift / SwiftUI, [`ios/`](ios/) | Сборка на Mac через Xcode; в App Store пока не опубликована |
+
+iOS-клиент подписан через Personal Team, установлен на iPhone 16 с iOS 26.6.2;
+пользователь подтвердил его работу. Он поддерживает несколько служебных аккаунтов,
+хранение сессий в Keychain, общее дерево адресов, открытие двери, получение кода,
+встроенный предпросмотр с автовосстановлением, темы и раскладку для выбранной руки.
+Подробные проверки и их границы записаны в [отчёте iOS](docs/IOS_VALIDATION.md).
+
+- [Сборка iOS и установка на свой iPhone](ios/README.md).
+- [Архитектура и соответствие слоёв двух клиентов](docs/ARCHITECTURE.md).
+- `.github/`, `docs/` и документы в корне общие для обеих платформ.
+
+### Интерфейс iOS
+
+Скриншоты демонстрационного режима:
+
+<img src="docs/ios-screenshots/home.png" width="260" alt="Главный экран служебного iOS-клиента"> <img src="docs/ios-screenshots/settings-left-hand.png" width="260" alt="Настройки темы и расположения кнопок на iOS">
+
+Следующие разделы описывают существующий Android-клиент, включая историю
+хранения аккаунтов и проверку настоящего портала. Особенности iOS описаны отдельно
+в [ios/README.md](ios/README.md).
+
+## Что уже работает на Android
 
 - добавление нескольких служебных логинов внутри приложения;
 - проверка состояния каждого логина с понятной отметкой действующего доступа;
@@ -104,7 +136,7 @@
 
 Демо не обращается к Дом.ру и не может открыть настоящую дверь.
 
-## Установка готовой версии
+## Установка готовой Android-версии
 
 1. Откройте [последний релиз](https://github.com/kdenv2604/DomRuPropTechApp/releases/latest).
 2. Скачайте файл `lk.proptech.ru-debug-0.3.11.apk`.
@@ -123,13 +155,14 @@
 поддерживается.
 
 ```bash
-./gradlew testDebugUnitTest assembleDebug
+cd android
+bash ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-Готовый APK появляется в `app/build/outputs/apk/debug/`.
+Готовый APK появляется в `android/app/build/outputs/apk/debug/`.
 
 Для APK, устанавливаемого поверх опубликованных версий, необходим исходный ключ.
-Укажите путь через `DOMRU_DEBUG_KEYSTORE` или в локальном `keystore.properties`:
+Укажите путь через `DOMRU_DEBUG_KEYSTORE` или в локальном `android/keystore.properties`:
 
 ```properties
 storeFile=.signing/legacy-debug.keystore
@@ -141,6 +174,8 @@ storeFile=.signing/legacy-debug.keystore
 при его отсутствии сборка завершается ошибкой, чтобы не выпустить несовместимый APK.
 
 ## Где что лежит
+
+Android-классы: `android/app/src/main/java/ru/domru/technics/`.
 
 - `model` — простые данные приложения;
 - `domain` — объединение адресов, поиск и правила повторов;

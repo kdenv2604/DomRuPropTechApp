@@ -14,3 +14,15 @@ captures/
 *.jks
 *.keystore
 keystore.properties
+
+# iOS: dependencies, local build products and signing material.
+ios/Vendor/
+ios/build-*/
+**/DerivedData/
+**/xcuserdata/
+*.xcuserstate
+*.xcresult
+*.xcarchive
+*.ipa
+*.p12
+*.mobileprovision

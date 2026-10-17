@@ -37,10 +37,11 @@ jobs:
           echo "DOMRU_DEBUG_KEYSTORE=$RUNNER_TEMP/domru-debug.keystore" >> "$GITHUB_ENV"
 
       - name: Проверка проекта
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug
+        working-directory: android
+        run: bash ./gradlew testDebugUnitTest lintDebug assembleDebug
 
       - name: Сохранение проверочного APK
         uses: actions/upload-artifact@v4
         with:
           name: lk.proptech.ru-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk

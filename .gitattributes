@@ -13,3 +13,13 @@
 
 # Gradle Wrapper содержит готовый двоичный файл.
 *.jar binary
+
+*.swift text eol=lf
+*.py text eol=lf
+*.plist text eol=lf
+*.pbxproj text eol=lf
+*.xcscheme text eol=lf
+*.xcprivacy text eol=lf
+gradlew text eol=lf
+*.mp4 binary
+*.flv binary
