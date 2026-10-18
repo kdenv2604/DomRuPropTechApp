@@ -29,6 +29,9 @@ import ru.domru.technics.model.CameraStream
 import ru.domru.technics.ui.screens.CameraPlaybackFailure
 import ru.domru.technics.ui.screens.CameraPlaybackSession
 import ru.domru.technics.ui.screens.LiveCameraPlayer
+import ru.domru.technics.ui.screens.CameraLastFrame
+import ru.domru.technics.ui.screens.LastCameraFrame
+import ru.domru.technics.ui.screens.rememberCameraLastFrame
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -192,6 +195,37 @@ class CameraPreviewPlaybackTest {
         }
         assertEquals(3, created.get())
         assertEquals(0, retries.get())
+    }
+
+    @Test
+    fun decodedFrameSurvivesReplacementLoadingButIsForgottenInBackground() {
+        val loading = mutableStateOf(false)
+        val current = AtomicReference<CameraPlaybackSession?>()
+        val frame = AtomicReference<CameraLastFrame>()
+        val source = CountingSource()
+        compose.setContent {
+            val remembered = rememberCameraLastFrame("isolated-camera")
+            frame.set(remembered)
+            MaterialTheme {
+                Box(Modifier.fillMaxSize()) {
+                    if (loading.value) LastCameraFrame(remembered, Modifier.fillMaxSize())
+                    else LiveCameraPlayer(localStream("frame-cache"), onRetry = {}, lastFrame = remembered,
+                        sessionFactory = { context, camera -> CameraPlaybackSession(context, camera, source).also(current::set) })
+                }
+            }
+        }
+        await("decoded frame copied from the actual video surface") { frame.get()?.bitmap != null }
+        val cached = frame.get().bitmap!!
+        assertTrue(cached.width <= 640)
+        assertTrue("The frame must contain video, not a black placeholder", cached.getPixel(cached.width / 2, cached.height / 2) and 0x00ffffff != 0)
+        compose.runOnUiThread { loading.value = true }
+        await("replacement loading releases old decoder") { current.get()?.released == true }
+        assertSame(cached, frame.get().bitmap)
+        val generation = frame.get().generation
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        assertNull("Backgrounding clears the camera image", frame.get().bitmap)
+        compose.runOnUiThread { frame.get().update(cached, generation) }
+        assertNull("A late copy cannot resurrect an old frame", frame.get().bitmap)
     }
 
     private fun end(session: CameraPlaybackSession) {

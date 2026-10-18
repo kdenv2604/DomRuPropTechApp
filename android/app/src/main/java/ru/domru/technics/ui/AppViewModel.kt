@@ -139,8 +139,7 @@ class AppViewModel internal constructor(
     private var networkCallbackRegistered = false
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            // Новый маршрут интернета требует свежей временной ссылки камеры.
-            viewModelScope.launch { recoverVisibleCamera() }
+            viewModelScope.launch { onCameraNetworkAvailable() }
         }
     }
 
@@ -625,6 +624,16 @@ class AppViewModel internal constructor(
 
     private fun isCameraVisible(entranceId: String): Boolean = appForeground &&
         !mutableState.value.showLogin && mutableState.value.selection.entranceId == entranceId
+
+    internal fun onCameraNetworkAvailable() {
+        val current = mutableState.value
+        val camera = current.cameraStates[current.selection.entranceId]
+        // Новый маршрут может появиться, пока прежний поток ещё исправно работает.
+        // Не уничтожаем его и не отменяем уже выполняющийся запрос ссылки.
+        if (camera is CameraState.Ready || camera == CameraState.Loading) return
+        if (camera is CameraState.Failed && camera.retryAfterSeconds == null) return
+        recoverVisibleCamera()
+    }
 
     private fun recoverVisibleCamera() {
         if (!appForeground || mutableState.value.showLogin) return

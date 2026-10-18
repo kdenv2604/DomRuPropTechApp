@@ -11,7 +11,7 @@ import XCTest
         let accounts = [AccountProfile(id: "account-a", title: "A", login: "test")]
         let catalog = try await repository.combinedCatalog(accounts: accounts)
         let entrance = try XCTUnwrap(catalog.entrances.values.flatMap { $0 }.first)
-        let camera = CameraController(repository: repository)
+        let camera = CameraController(repository: repository, monitor: nil)
         camera.show(entrance, accounts: accounts, demo: false)
         let first = try await waitForPlayback(camera)
         camera.setForeground(false)
@@ -32,6 +32,26 @@ import XCTest
         camera.failed(third.id)
         XCTAssertNil(camera.playback)
         XCTAssertFalse(camera.loading)
+    }
+
+    func testNetworkUpdatesDoNotReplaceAnExistingPlaybackOrRequestAnotherURL() async throws {
+        let transport = ScriptedTransport { request, _ in
+            if request.url!.path.hasSuffix("/camera/video") { return response(#"{"streamUrl":"https://camera.example.invalid/live.flv"}"#) }
+            return PortalFixtures.catalogResponse(request)
+        }
+        let repository = ServiceRepository(vault: SessionVault(persistence: MemoryPersistence([session(fresh: true)])), transport: transport)
+        let accounts = [AccountProfile(id: "account-a", title: "A", login: "test")]
+        let catalog = try await repository.combinedCatalog(accounts: accounts)
+        let entrance = try XCTUnwrap(catalog.entrances.values.flatMap { $0 }.first)
+        let camera = CameraController(repository: repository, monitor: nil)
+        defer { camera.stop() }
+        camera.show(entrance, accounts: accounts, demo: false)
+        let playback = try await waitForPlayback(camera)
+        for available in [true, true, false, true, true] { camera.networkAvailabilityChanged(available) }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(camera.playback?.id, playback.id)
+        let requests = await transport.recorded().filter { $0.url!.path.hasSuffix("/camera/video") }
+        XCTAssertEqual(requests.count, 1, "Сетевое уведомление само по себе не доказывает обрыв камеры")
     }
 
     private func waitForPlayback(_ camera: CameraController) async throws -> CameraPlayback {

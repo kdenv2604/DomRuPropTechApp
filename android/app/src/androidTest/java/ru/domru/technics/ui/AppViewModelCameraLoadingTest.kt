@@ -109,6 +109,16 @@ class AppViewModelCameraLoadingTest {
         assertTrue(resumed.playbackGeneration > initial.playbackGeneration)
     }
 
+    @Test
+    fun networkNotificationKeepsPendingRequestAndHealthyStream() = runScenario {
+        val entrance = openCamera()
+        onMain { viewModel.onCameraNetworkAvailable() }
+        val initial = completeCameraRequest(entrance.id, "stable-stream")
+        repeat(3) { onMain { viewModel.onCameraNetworkAvailable() } }
+        assertEquals(initial, viewModel.state.value.cameraStates[entrance.id])
+        assertTrue("Живой поток не запрашивается заново из-за сетевого уведомления", repository.cameraRequests.tryReceive().isFailure)
+    }
+
     private suspend fun openCamera(): Entrance {
         val street = viewModel.state.value.streets.single()
         onMain { viewModel.toggleStreet(street) }

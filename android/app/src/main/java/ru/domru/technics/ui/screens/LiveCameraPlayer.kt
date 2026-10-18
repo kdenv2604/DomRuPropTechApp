@@ -3,6 +3,11 @@
 package ru.domru.technics.ui.screens
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
+import android.view.PixelCopy
+import android.view.SurfaceView
 import android.graphics.Color as AndroidColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -70,6 +75,7 @@ internal class CameraPlaybackSession(
     var released = false
         private set
     private var target: PlayerView? = null
+    private var copyingFrame = false
     val player = ExoPlayer.Builder(context.applicationContext)
         .setLoadControl(DefaultLoadControl.Builder()
             .setBufferDurationsMs(1_500, 8_000, 500, 1_000).build())
@@ -147,6 +153,25 @@ internal class CameraPlaybackSession(
         }
     }
 
+    fun captureFrame(onFrame: (Bitmap) -> Unit) {
+        val surface = target?.videoSurfaceView as? SurfaceView ?: return
+        if (released || copyingFrame || !videoReady || playbackFailed || buffering ||
+            !surface.holder.surface.isValid || surface.width == 0 || surface.height == 0) return
+        val width = minOf(surface.width, 640)
+        val height = maxOf(1, surface.height * width / surface.width)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        copyingFrame = true
+        // Копируем уже показанный кадр, не меняя SurfaceView и аппаратный декодер.
+        try {
+            PixelCopy.request(surface, bitmap, { result ->
+                copyingFrame = false
+                if (result == PixelCopy.SUCCESS && !released) onFrame(bitmap)
+            }, Handler(Looper.getMainLooper()))
+        } catch (_: IllegalArgumentException) {
+            copyingFrame = false // Поверхность могла исчезнуть между проверкой и запросом.
+        }
+    }
+
     fun release() {
         if (released) return
         released = true
@@ -163,6 +188,7 @@ internal fun LiveCameraPlayer(
     stream: CameraStream,
     onRetry: () -> Unit,
     playbackGeneration: Long = 0,
+    lastFrame: CameraLastFrame = rememberCameraLastFrame(),
     sessionFactory: (Context, CameraStream) -> CameraPlaybackSession = { context, camera -> CameraPlaybackSession(context, camera) },
     firstFrameTimeoutMs: Long = 20_000,
     retryDelayMs: Long = 3_000,
@@ -192,6 +218,19 @@ internal fun LiveCameraPlayer(
         onDispose { owner.lifecycle.removeObserver(observer) }
     }
     DisposableEffect(session) { onDispose { session?.release() } }
+    DisposableEffect(session, lastFrame) {
+        val handler = Handler(Looper.getMainLooper())
+        val capture = object : Runnable {
+            override fun run() {
+                if (session == null || session.released) return
+                val generation = lastFrame.generation
+                session.captureFrame { lastFrame.update(it, generation) }
+                handler.postDelayed(this, 2_000)
+            }
+        }
+        handler.post(capture)
+        onDispose { handler.removeCallbacks(capture) }
+    }
     LaunchedEffect(session, session?.buffering, session?.videoReady) {
         if (session != null && (session.buffering || !session.videoReady)) {
             delay(firstFrameTimeoutMs)
@@ -220,17 +259,28 @@ internal fun LiveCameraPlayer(
                 )
             }
         }
+        if (session == null || !session.videoReady || session.playbackFailed) {
+            LastCameraFrame(lastFrame, Modifier.fillMaxSize())
+        }
         if (session == null || (!session.videoReady && !session.playbackFailed)) {
-            CircularProgressIndicator(Modifier.align(Alignment.Center).size(30.dp), color = Color.White, strokeWidth = 2.dp)
+            Column(Modifier.align(Alignment.Center).background(Color(0x99080C11), RoundedCornerShape(12.dp)).padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(Modifier.size(30.dp), color = Color.White, strokeWidth = 2.dp)
+                if (lastFrame.bitmap != null) Text("Восстанавливаем…", color = Color.White, modifier = Modifier.padding(top = 8.dp))
+            }
+        }
+        if (session?.buffering == true && session.videoReady && !session.playbackFailed) {
+            Text("Ожидаем видео…", color = Color.White,
+                modifier = Modifier.align(Alignment.BottomCenter).background(Color(0x99080C11)).padding(8.dp))
         }
         if (session?.playbackFailed == true) {
-            Box(Modifier.fillMaxSize().background(Color(0xDD080C11)), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().background(Color(0x66080C11)), contentAlignment = Alignment.Center) {
                 val reason = session.failureReason?.caption
                 val code = session.failureCode?.let { " · $it" }.orEmpty()
                 Text(listOfNotNull(reason?.plus(code), "Восстанавливаем видеопоток…").joinToString("\n"), color = Color.White,
                     modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
             }
-        } else {
+        } else if (session?.videoReady == true && !session.buffering) {
             Row(Modifier.align(Alignment.TopStart).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
                 Spacer(Modifier.width(7.dp))

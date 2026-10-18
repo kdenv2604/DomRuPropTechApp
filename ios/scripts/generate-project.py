@@ -105,7 +105,7 @@ for key, name, folder, product_type, extension in target_specs:
               "LD_RUNPATH_SEARCH_PATHS": "$(inherited) @executable_path/Frameworks @loader_path/Frameworks"}
     if key == "app":
         common.update({"INFOPLIST_FILE": "Resources/Info.plist", "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
-                       "MARKETING_VERSION": "0.3.11", "CURRENT_PROJECT_VERSION": "15",
+                       "MARKETING_VERSION": "0.3.12", "CURRENT_PROJECT_VERSION": "16",
                        "INFOPLIST_KEY_UIApplicationSceneManifest_Generation": "YES", "INFOPLIST_KEY_UILaunchScreen_Generation": "YES",
                        "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator", "SUPPORTS_MACCATALYST": "NO",
                        "ENABLE_PREVIEWS": "YES", "ENABLE_TESTABILITY": "YES"})

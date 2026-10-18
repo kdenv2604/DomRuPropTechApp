@@ -42,7 +42,11 @@ struct HomeScreen: View {
         .sheet(item: $model.shownCode) { code in CodeScreen(code: code) }
         .onChange(of: sheet) { model.camera.setObscured($0 != nil || model.shownCode != nil) }
         .onChange(of: model.shownCode?.id) { model.camera.setObscured($0 != nil || sheet != nil) }
-        .onChange(of: scenePhase) { phase in if phase == .active { model.foreground() } else { model.background() } }
+        .onChange(of: scenePhase) { phase in
+            // Краткое inactive (например, системное окно) ещё не означает уход в фон.
+            if phase == .active { model.foreground() }
+            else if phase == .background { model.background() }
+        }
     }
 
     private var header: some View {
@@ -182,6 +186,7 @@ private struct EntranceCard: View {
             if expanded {
                 if entrance.cameraAvailable {
                     CameraPreview(controller: model.camera, entrance: entrance, accounts: model.usableAccounts, demo: model.isDemo)
+                        .id(entrance.id)
                 } else {
                     Label("Для этого подъезда камера недоступна", systemImage: "video.slash").font(.callout).foregroundColor(Palette.muted)
                         .frame(maxWidth: .infinity).padding(.vertical, 30).background(Palette.soft).cornerRadius(17)

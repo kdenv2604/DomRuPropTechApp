@@ -11,8 +11,8 @@ struct CameraPlayback: Identifiable, Equatable {
     @Published private(set) var message = "Подключаем камеру…"
     @Published private(set) var loading = false
     private let repository: ServiceRepository
-    private let monitor = NWPathMonitor()
-    private var networkPath: NWPath?
+    private let monitor: NWPathMonitor?
+    private var networkAvailable: Bool?
     private var request: Task<Void, Never>?
     private var generation = UUID()
     private var entrance: Entrance?
@@ -22,21 +22,25 @@ struct CameraPlayback: Identifiable, Equatable {
     private var obscured = false
     private var visible: Bool { foreground && !obscured && entrance != nil }
 
-    init(repository: ServiceRepository) {
+    init(repository: ServiceRepository, monitor: NWPathMonitor? = NWPathMonitor()) {
         self.repository = repository
-        monitor.pathUpdateHandler = { [weak self] path in
-            Task { @MainActor in
-                guard let self else { return }
-                let previous = self.networkPath
-                self.networkPath = path
-                // Сравниваем весь маршрут: переход между двумя Wi-Fi сетями может сохранить имя интерфейса.
-                if previous != nil, previous != path, path.status == .satisfied { self.restart() }
-            }
+        self.monitor = monitor
+        monitor?.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in self?.networkAvailabilityChanged(path.status == .satisfied) }
         }
-        monitor.start(queue: DispatchQueue(label: "ru.domru.technics.network"))
+        monitor?.start(queue: DispatchQueue(label: "ru.domru.technics.network"))
     }
 
-    deinit { monitor.cancel(); request?.cancel() }
+    deinit { monitor?.cancel(); request?.cancel() }
+
+    func networkAvailabilityChanged(_ available: Bool) {
+        let previous = networkAvailable
+        networkAvailable = available
+        // Изменение маршрута не доказывает обрыв уже открытого TCP-соединения.
+        // Живой плеер оставляем работать; его ошибка/контроль кадров запустят восстановление.
+        // Возврат сети только ускоряет повтор, который уже ожидает новую ссылку.
+        if previous == false, available, playback == nil, loading { restart() }
+    }
 
     func show(_ entrance: Entrance, accounts: [AccountProfile], demo: Bool) {
         guard self.entrance != entrance || self.accounts != accounts || playback == nil else { return }

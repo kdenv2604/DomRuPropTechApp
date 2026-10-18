@@ -44,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -555,6 +556,7 @@ private fun ExpandedEntranceContent(
     Column {
         Spacer(Modifier.height(10.dp))
         CameraArea(
+            cameraId = entrance.id,
             cameraAvailable = entrance.cameraAvailable,
             cameraState = cameraState,
             onRetry = onRetryCamera,
@@ -598,14 +600,17 @@ private fun ExpandedEntranceContent(
 /** Выбирает между плеером, загрузкой и понятным сообщением об ошибке. */
 @Composable
 private fun CameraArea(
+    cameraId: String,
     cameraAvailable: Boolean,
     cameraState: CameraState,
     onRetry: () -> Unit,
 ) {
+    val lastFrame = rememberCameraLastFrame(cameraId)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape(17.dp))
             .background(
                 Brush.linearGradient(listOf(Color(0xFF1D2935), Color(0xFF080C11))),
                 RoundedCornerShape(17.dp),
@@ -614,16 +619,20 @@ private fun CameraArea(
         if (cameraState is CameraState.Ready) {
             LiveCameraPlayer(
                 stream = cameraState.stream,
+                lastFrame = lastFrame,
                 onRetry = onRetry,
                 playbackGeneration = cameraState.playbackGeneration,
             )
         } else {
+            LastCameraFrame(lastFrame, Modifier.fillMaxSize())
+            if (lastFrame.bitmap != null) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)))
             CameraMessage(
                 loading = cameraState == CameraState.Loading,
                 message = when {
                     !cameraAvailable -> "Камера недоступна"
                     cameraState is CameraState.Failed -> cameraState.message +
                         (cameraState.retryAfterSeconds?.let { "\nПовтор через $it с…" }.orEmpty())
+                    lastFrame.bitmap != null -> "Последний кадр · Восстанавливаем…"
                     else -> "Получаем видеопоток"
                 },
             )
