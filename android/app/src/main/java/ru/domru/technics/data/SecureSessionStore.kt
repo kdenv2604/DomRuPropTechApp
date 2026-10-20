@@ -16,7 +16,7 @@ import javax.crypto.spec.GCMParameterSpec
  * Хранит каждую сессию в зашифрованном виде.
  * Ключ создаёт сам Android, поэтому обычным чтением файлов токены получить нельзя.
  */
-internal class SecureSessionStore(context: Context) : SessionStore {
+internal class SecureSessionStore(context: Context) : SessionStore, CatalogCipher {
     private val preferences = context.applicationContext.getSharedPreferences(
         PREFERENCES_NAME,
         Context.MODE_PRIVATE,
@@ -102,6 +102,10 @@ internal class SecureSessionStore(context: Context) : SessionStore {
         )
         return String(cipher.doFinal(encrypted), StandardCharsets.UTF_8)
     }
+
+    override fun encryptCatalog(plainText: String): String = encrypt(plainText)
+
+    override fun decryptCatalog(cipherText: String): String = decrypt(cipherText)
 
     /** Берёт существующий ключ или просит Android создать новый невынимаемый ключ. */
     private fun getOrCreateSecretKey(): SecretKey {

@@ -149,7 +149,7 @@ fun WorkScreen(
                 items(state.searchResults, key = { "search:${it.street.id}:${it.house.id}" }) { result ->
                     SearchResultRow(result = result, onClick = { onSearchResultClick(result) })
                 }
-            } else if (state.streetsLoading) {
+            } else if (state.streetsLoading && state.streets.isEmpty()) {
                 item(key = "street-loading") { AddressLoadingRow() }
             } else if (state.streets.isEmpty()) {
                 item(key = "empty-tree") {

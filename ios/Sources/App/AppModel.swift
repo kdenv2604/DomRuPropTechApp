@@ -15,6 +15,7 @@ import Foundation
     let preferences: AppPreferences
     let camera: CameraController
     private let repository: ServiceRepository
+    private var cachedAccounts: Set<String> = []
     private var loadTask: Task<Void, Never>?
     private var loadGeneration = UUID()
     private var codeTask: Task<Void, Never>?
@@ -23,9 +24,15 @@ import Foundation
     private var actionGenerations: [String: UUID] = [:]
 
     var isDemo: Bool { !accounts.isEmpty && accounts.allSatisfy(\.isDemo) }
-    var usableAccounts: [AccountProfile] { accounts.filter { statuses[$0.id] == .active } }
+    var usableAccounts: [AccountProfile] {
+        accounts.filter { account in
+            let status = statuses[account.id]
+            return status == .active || (cachedAccounts.contains(account.id) &&
+                (status == nil || status == .checking || status == .unavailable))
+        }
+    }
 
-    init(repository: ServiceRepository = ServiceRepository(), preferences: AppPreferences) {
+    init(repository: ServiceRepository = ServiceRepository(catalogStore: CatalogDiskStore()), preferences: AppPreferences) {
         self.repository = repository
         self.preferences = preferences
         selection = preferences.selection
@@ -36,7 +43,16 @@ import Foundation
         guard !started else { return }
         started = true
         if demo { enterDemo(); return }
-        do { accounts = try await repository.savedAccounts(); refresh() }
+        do {
+            accounts = try await repository.savedAccounts()
+            try await repository.restoreCatalogs()
+            guard !isDemo else { return }
+            cachedAccounts = await repository.cachedAccountIDs()
+            catalog = await repository.cachedCatalog(accounts: accounts)
+            // При пустом снимке выбор восстановится после первого ответа сервера.
+            if !catalog.streets.isEmpty { restoreSelection() }
+            refresh()
+        }
         catch { errorMessage = userMessage(error) }
     }
 
@@ -82,17 +98,36 @@ import Foundation
 
     func refresh() {
         guard !isDemo else { catalog = DemoCatalog.make(); return }
-        loadTask?.cancel(); camera.stop(); cancelCode()
+        loadTask?.cancel()
         let generation = UUID(); loadGeneration = generation
         let requested = accounts
         statuses = Dictionary(uniqueKeysWithValues: requested.map { ($0.id, .checking) })
         loading = !requested.isEmpty; errorMessage = nil
         loadTask = Task {
             guard !Task.isCancelled, generation == loadGeneration else { return }
-            await repository.clearCatalogs()
+            // Сначала исключаем удалённые аккаунты из дерева. Остальные снимки продолжают работать.
+            await applyCachedCatalog(requested, generation: generation)
+            guard !Task.isCancelled, generation == loadGeneration else { return }
             do {
                 let checked = try await withThrowingTaskGroup(of: (String, AccountStatus).self) { group in
-                    for account in requested { group.addTask { (account.id, try await self.repository.checkAccess(account.id)) } }
+                    for account in requested {
+                        group.addTask {
+                            var status = try await self.repository.checkAccess(account.id)
+                            try Task.checkCancellation()
+                            if status == .active {
+                                do {
+                                    if try await self.repository.refreshCatalog(account.id) == false { status = .unavailable }
+                                } catch {
+                                    try Task.checkCancellation()
+                                    status = (error as? ServiceError)?.accountStatus ?? .unavailable
+                                }
+                            }
+                            if status == .needsPassword || status == .accessDenied {
+                                await self.repository.forgetCatalog(account.id)
+                            }
+                            return (account.id, status)
+                        }
+                    }
                     var result: [String: AccountStatus] = [:]
                     for try await (id, status) in group { result[id] = status }
                     return result
@@ -100,20 +135,34 @@ import Foundation
                 try Task.checkCancellation()
                 guard generation == loadGeneration else { return }
                 statuses = checked
-                let active = requested.filter { checked[$0.id] == .active }
-                let loaded = try await repository.combinedCatalog(accounts: active)
-                try Task.checkCancellation()
-                guard generation == loadGeneration else { return }
-                catalog = loaded
-                if !loaded.complete { errorMessage = "Часть объектов временно недоступна. Доступные объекты показаны" }
-                else if !requested.isEmpty && active.isEmpty { errorMessage = "Не удалось загрузить доступы. Проверь состояние аккаунтов" }
-                restoreSelection()
+                await applyCachedCatalog(requested, generation: generation)
+                guard !Task.isCancelled, generation == loadGeneration else { return }
+                if checked.values.contains(.unavailable) {
+                    errorMessage = catalog.streets.isEmpty ? "Не удалось загрузить доступы. Проверь состояние аккаунтов" :
+                        "Не всё удалось обновить. Показываем сохранённые доступы"
+                }
             } catch {
                 guard !Task.isCancelled, generation == loadGeneration else { return }
                 errorMessage = userMessage(error)
             }
             if generation == loadGeneration { loading = false }
         }
+    }
+
+    private func applyCachedCatalog(_ requested: [AccountProfile], generation: UUID) async {
+        let ids = await repository.cachedAccountIDs()
+        let loaded = await repository.cachedCatalog(accounts: requested)
+        guard !Task.isCancelled, generation == loadGeneration else { return }
+        let oldVisible = catalog.entrances.values.joined().first { $0.id == selection.entranceID }
+        let newVisible = loaded.entrances.values.joined().first { $0.id == selection.entranceID }
+        cachedAccounts = ids
+        catalog = loaded
+        // Сохраняем текущий пользовательский выбор, а не заново читаем его с диска.
+        if !loaded.streets.isEmpty || !loading || requested.isEmpty || !cachedAccounts.isEmpty { restoreSelection() }
+        if oldVisible?.sources != newVisible?.sources { cancelCode() }
+        if let newVisible, newVisible.cameraAvailable {
+            camera.updateContext(newVisible, accounts: usableAccounts)
+        } else if oldVisible != nil { camera.stop() }
     }
 
     private func restoreSelection() {

@@ -9,6 +9,7 @@ import ru.domru.technics.domain.isVideoRequestRetryable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
@@ -133,6 +134,7 @@ class AppViewModel internal constructor(
     private var codeRequestJob: Job? = null
     private var cameraJob: Job? = null
     private var accountCheckJob: Job? = null
+    private var restoreCatalogJob: Job? = null
     private var appForeground = false
     private var cameraPlaybackGeneration = 0L
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
@@ -145,8 +147,14 @@ class AppViewModel internal constructor(
 
     init {
         networkCallbackRegistered = runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }.isSuccess
-        // Сначала проверяем каждый логин. Нерабочий аккаунт не должен ломать общий список.
-        if (savedAccounts.isNotEmpty()) checkAccountAccesses(loadAddressesAfter = true)
+        if (savedAccounts.isNotEmpty()) {
+            restoreCatalogJob = viewModelScope.launch {
+                repository.restoreCatalogs()
+                ensureActive()
+                if (repository.cachedAccountIds().isNotEmpty()) loadCombinedStreetList()
+                checkAccountAccesses(loadAddressesAfter = true)
+            }
+        }
     }
 
     /** Выполняет один вход, сохраняет сессию и обновляет общий список адресов. */
@@ -168,7 +176,7 @@ class AppViewModel internal constructor(
                 // Повторный вход тем же логином обновляет его карточку, но не создаёт дубль.
                 val accounts = mutableState.value.accounts
                     .filterNot { it.id == account.id || it.isDemo } + account
-                resetAddressTree {
+                updateAccountTree {
                     it.copy(
                         accounts = accounts,
                         showLogin = false,
@@ -179,7 +187,7 @@ class AppViewModel internal constructor(
                     )
                 }
                 restartPendingAccountCheck()
-                loadCombinedStreetList()
+                if (repository.cachedAccountIds().isEmpty()) loadCombinedStreetList()
             } catch (error: Throwable) {
                 error.rethrowIfCancellation()
                 mutableState.update {
@@ -192,6 +200,7 @@ class AppViewModel internal constructor(
     /** Заменяет настоящие аккаунты вымышленными данными для проверки интерфейса. */
     fun openDemo() {
         if (!BuildConfig.DEBUG) return
+        restoreCatalogJob?.cancel()
         resetAddressTree {
             it.copy(
                 accounts = repository.demoAccounts(),
@@ -274,7 +283,7 @@ class AppViewModel internal constructor(
                 return@launch
             }
             val remainingAccounts = mutableState.value.accounts.filterNot { it.id == accountId }
-            resetAddressTree {
+            updateAccountTree {
                 it.copy(
                     accounts = remainingAccounts,
                     showLogin = remainingAccounts.isEmpty(),
@@ -289,7 +298,9 @@ class AppViewModel internal constructor(
                 )
             }
             restartPendingAccountCheck()
-            if (remainingAccounts.isNotEmpty()) loadCombinedStreetList()
+            if (remainingAccounts.isNotEmpty() && repository.cachedAccountIds().isEmpty()) {
+                loadCombinedStreetList()
+            }
         }
     }
 
@@ -309,9 +320,10 @@ class AppViewModel internal constructor(
     /** Забывает старый каталог и заново читает доступы с сервера. */
     fun refreshAddresses() {
         if (mutableState.value.streetsLoading || mutableState.value.accounts.isEmpty()) return
-        // Очищаем старую копию, иначе кнопка показала бы тот же список из памяти.
-        repository.clearCachedCatalogs()
-        resetAddressTree()
+        if (repository.cachedAccountIds().isEmpty()) {
+            repository.clearCachedCatalogs()
+            resetAddressTree()
+        }
         checkAccountAccesses(loadAddressesAfter = true)
     }
 
@@ -380,7 +392,7 @@ class AppViewModel internal constructor(
                 val accounts = mutableState.value.accounts.map { saved ->
                     if (saved.id == accountId) updated else saved
                 }.distinctBy(AccountProfile::id)
-                resetAddressTree {
+                updateAccountTree {
                     it.copy(
                         accounts = accounts,
                         accountStatuses = (it.accountStatuses - accountId) +
@@ -391,7 +403,7 @@ class AppViewModel internal constructor(
                     )
                 }
                 restartPendingAccountCheck()
-                loadCombinedStreetList()
+                if (repository.cachedAccountIds().isEmpty()) loadCombinedStreetList()
                 eventChannel.send(AppEvent.Message("Доступ для логина обновлён"))
             } catch (error: Throwable) {
                 error.rethrowIfCancellation()
@@ -680,7 +692,11 @@ class AppViewModel internal constructor(
                     return@launch
                 }
                 val streets = combinedAccess.loadStreets(accounts)
-                mutableState.update { it.copy(streets = streets, streetsLoading = false) }
+                if (repository.cachedAccountIds().isNotEmpty()) {
+                    reconcileCachedTree(streets)
+                } else {
+                    mutableState.update { it.copy(streets = streets, streetsLoading = false) }
+                }
                 // Выбор, сделанный во время загрузки улиц, важнее сохранённой ветки.
                 if (!restoreSelectionAfterLoad) return@launch
                 restoreSelectionAfterLoad = false
@@ -948,8 +964,13 @@ class AppViewModel internal constructor(
     }
 
     /** Возвращает только аккаунты, запросы через которые сейчас разрешены. */
-    private fun activeAccounts(): List<AccountProfile> = mutableState.value.accounts.filter {
-        it.isDemo || mutableState.value.accountStatuses[it.id] == AccountAccessStatus.ACTIVE
+    private fun activeAccounts(): List<AccountProfile> {
+        val cached = repository.cachedAccountIds()
+        return mutableState.value.accounts.filter {
+            val status = mutableState.value.accountStatuses[it.id]
+            it.isDemo || status == AccountAccessStatus.ACTIVE ||
+                (it.id in cached && status in setOf(AccountAccessStatus.CHECKING, AccountAccessStatus.UNAVAILABLE))
+        }
     }
 
     /** Проверяет логины параллельно и по желанию обновляет адресное дерево. */
@@ -973,21 +994,56 @@ class AppViewModel internal constructor(
         accountCheckJob = viewModelScope.launch {
             val statuses = coroutineScope {
                 accounts.map { account ->
-                    async { account.id to repository.checkAccess(account.id) }
+                    async {
+                        var status = repository.checkAccess(account.id)
+                        ensureActive()
+                        if (status == AccountAccessStatus.ACTIVE && loadAddressesAfter) {
+                            try {
+                                if (!repository.refreshCatalog(account.id)) status = AccountAccessStatus.UNAVAILABLE
+                            } catch (error: Throwable) {
+                                error.rethrowIfCancellation()
+                                status = when {
+                                    error is PortalRequestException && error.statusCode == 403 ->
+                                        AccountAccessStatus.ACCESS_DENIED
+                                    error is DomruAuthenticationException && error.failure in setOf(
+                                        ru.domru.technics.data.AuthenticationFailure.INVALID_CREDENTIALS,
+                                        ru.domru.technics.data.AuthenticationFailure.SESSION_EXPIRED,
+                                    ) -> AccountAccessStatus.NEEDS_PASSWORD
+                                    else -> AccountAccessStatus.UNAVAILABLE
+                                }
+                            }
+                        }
+                        if (status in setOf(AccountAccessStatus.NEEDS_PASSWORD, AccountAccessStatus.ACCESS_DENIED)) {
+                            repository.forgetCatalog(account.id)
+                        }
+                        account.id to status
+                    }
                 }.awaitAll().toMap()
             }
             ensureActive()
             mutableState.update { it.copy(accountStatuses = it.accountStatuses + statuses) }
             if (loadAddressesAfter) {
-                repository.clearCachedCatalogs()
-                resetAddressTree()
+                if (repository.cachedAccountIds().isEmpty()) {
+                    repository.clearCachedCatalogs()
+                    resetAddressTree()
+                }
                 loadCombinedStreetList()
+                if (statuses.values.any { it == AccountAccessStatus.UNAVAILABLE } &&
+                    repository.cachedAccountIds().isNotEmpty()) {
+                    eventChannel.send(AppEvent.Message("Не всё удалось обновить. Показываем сохранённые доступы"))
+                }
             }
         }
     }
 
     /** Новый вход уже проверен; остальные незавершённые проверки запускаем заново. */
     private fun restartPendingAccountCheck() {
+        if (repository.cachedAccountIds().isNotEmpty()) {
+            accountCheckJob?.cancel()
+            accountCheckJob = null
+            checkAccountAccesses(loadAddressesAfter = true)
+            return
+        }
         if (accountCheckJob?.isActive != true) return
         accountCheckJob?.cancel()
         accountCheckJob = null
@@ -1018,6 +1074,72 @@ class AppViewModel internal constructor(
                 ),
             )
         }
+
+    /** Новая учётка не должна закрывать камеру и дерево остальных учёток. */
+    private fun updateAccountTree(update: (AppUiState) -> AppUiState) {
+        restoreCatalogJob?.cancel()
+        if (repository.cachedAccountIds().isEmpty()) {
+            resetAddressTree(update)
+            return
+        }
+        addressLoadingJob.cancelChildren()
+        mutableState.update(update)
+    }
+
+    /**
+     * Обновляем уже загруженные ветки одним снимком. Незавершённые старые чтения
+     * отменяются до замены, а отправленная команда двери никогда не повторяется.
+     */
+    private suspend fun reconcileCachedTree(streets: List<Street>) {
+        val before = mutableState.value
+        val houses = linkedMapOf<String, List<House>>()
+        val entrances = linkedMapOf<String, List<Entrance>>()
+        streets.filter { it.id in before.housesByStreet || it.locality.id == before.selection.localityId }
+            .forEach { street ->
+                houses[street.id] = combinedAccess.loadHouses(street)
+                houses.getValue(street.id).filter {
+                    it.id in before.entrancesByHouse || it.id == before.selection.houseId
+                }.forEach { house -> entrances[house.id] = combinedAccess.loadEntrances(house) }
+            }
+        currentCoroutineContext().ensureActive()
+        // Пользователь мог раскрыть новую ветку во время сборки. В таком случае читаем
+        // её тоже, вместо применения снимка, который закроет сделанный им выбор.
+        if (mutableState.value.selection != before.selection ||
+            mutableState.value.housesByStreet.keys != before.housesByStreet.keys ||
+            mutableState.value.entrancesByHouse.keys != before.entrancesByHouse.keys) {
+            reconcileCachedTree(streets)
+            return
+        }
+        val currentJob = currentCoroutineContext()[Job]
+        addressLoadingJob.children.filter { it != currentJob }.forEach { it.cancel() }
+        val currentEntrances = entrances.values.flatten().associateBy(Entrance::id)
+        val oldVisible = before.entrancesByHouse.values.flatten().firstOrNull { it.id == before.selection.entranceId }
+        val newVisible = currentEntrances[before.selection.entranceId]
+        val oldCameraState = before.cameraStates[before.selection.entranceId]
+        val playingSource = (oldCameraState as? CameraState.Ready)?.stream?.source
+        val keepCamera = newVisible != null && newVisible.cameraAvailable && when {
+            playingSource != null -> playingSource in newVisible.sources
+            oldCameraState == CameraState.Loading -> oldVisible?.sources == newVisible.sources
+            else -> false
+        }
+        if (!keepCamera) cameraJob?.cancel()
+        if (oldVisible != null && oldVisible.sources != newVisible?.sources) cancelCodeRequest()
+        mutableState.update { current ->
+            var selection = current.selection
+            if (streets.none { it.locality.id == selection.localityId }) selection = AccordionSelection()
+            else if (selection.houseId != null && houses.values.flatten().none { it.id == selection.houseId }) {
+                selection = selection.copy(houseId = null, entranceId = null)
+            } else if (selection.entranceId != null && selection.entranceId !in currentEntrances) {
+                selection = selection.copy(entranceId = null)
+            }
+            current.copy(streets = streets, streetsLoading = false,
+                housesByStreet = houses, entrancesByHouse = entrances, selection = selection,
+                loadingStreetIds = emptySet(), loadingHouseIds = emptySet(),
+                cameraStates = if (keepCamera) current.cameraStates.filterKeys { it == newVisible?.id } else emptyMap())
+        }
+        if (before.searchQuery.isNotBlank()) updateSearchQuery(before.searchQuery)
+        if (!keepCamera && newVisible?.cameraAvailable == true && appForeground) loadCameraStream(newVisible)
+    }
 
     /** Отменяет чтение старого каталога до очистки его данных и индикаторов загрузки. */
     private fun resetAddressTree(updateState: (AppUiState) -> AppUiState = { it }) {

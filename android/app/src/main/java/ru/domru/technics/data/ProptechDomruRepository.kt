@@ -2,6 +2,11 @@ package ru.domru.technics.data
 
 import android.content.Context
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import java.io.File
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import ru.domru.technics.domain.AddressSearch
@@ -21,14 +26,69 @@ import java.util.concurrent.ConcurrentHashMap
 class ProptechDomruRepository internal constructor(
     private val sessionStore: SessionStore,
     private val oidcClient: OidcSessionClient,
+    private val catalogStore: CatalogDiskStore? = null,
 ) : DomruRepository {
-    constructor(context: Context) : this(SecureSessionStore(context), DomruOidcClient())
+    constructor(context: Context) : this(SecureSessionStore(context), DomruOidcClient(),
+        CatalogDiskStore(File(context.noBackupFilesDir, "access-catalogs"), SecureSessionStore(context)))
 
     private val demoRepository = PrototypeDomruRepository()
     private val sessionProvider = DomruSessionProvider(sessionStore, oidcClient)
     private val apiClient = ProptechApiClient(sessionProvider)
     private val catalogs = ConcurrentHashMap<String, RemoteCatalog>()
     private val catalogLocks = ConcurrentHashMap<String, Mutex>()
+    private val catalogStateLock = Any()
+    private val generations = mutableMapOf<String, Long>()
+
+    override fun cachedAccountIds(): Set<String> = catalogs.keys.toSet()
+
+    override suspend fun restoreCatalogs() = withContext(Dispatchers.IO) {
+        sessionStore.loadAll().forEach { session ->
+            val generation = synchronized(catalogStateLock) { generations[session.accountId] ?: 0L }
+            val saved = catalogStore?.read(session.accountId, session.catalogBinding()) ?: return@forEach
+            currentCoroutineContext().ensureActive()
+            synchronized(catalogStateLock) {
+                if ((generations[session.accountId] ?: 0L) == generation &&
+                    sessionStore.find(session.accountId)?.catalogBinding() == session.catalogBinding()) {
+                    catalogs.putIfAbsent(session.accountId, saved)
+                }
+            }
+        }
+    }
+
+    override suspend fun refreshCatalog(accountId: String): Boolean = withContext(Dispatchers.IO) {
+        if (isDemoAccount(accountId)) return@withContext true
+        lockFor(accountId).withLock { fetchCatalog(accountId).complete }
+    }
+
+    override suspend fun forgetCatalog(accountId: String) = withContext(Dispatchers.IO) {
+        invalidateCatalog(accountId)
+    }
+
+    private fun StoredSession.catalogBinding(): String = "$accountId|$login|$createdAtMillis"
+
+    private fun invalidateCatalog(accountId: String) = synchronized(catalogStateLock) {
+        generations[accountId] = (generations[accountId] ?: 0L) + 1L
+        catalogs.remove(accountId)
+        catalogStore?.remove(accountId)
+        Unit
+    }
+
+    private suspend fun fetchCatalog(accountId: String): RemoteCatalog {
+        val generation = synchronized(catalogStateLock) { generations[accountId] ?: 0L }
+        val binding = sessionStore.find(accountId)?.catalogBinding()
+            ?: throw DomruAuthenticationException("Сессия не найдена", AuthenticationFailure.SESSION_EXPIRED)
+        val loaded = loadCatalog(accountId)
+        currentCoroutineContext().ensureActive()
+        // Удаление/новый вход меняют поколение. Поздний ответ не воскрешает старые доступы.
+        synchronized(catalogStateLock) {
+            if ((generations[accountId] ?: 0L) != generation ||
+                sessionStore.find(accountId)?.catalogBinding() != binding) throw CancellationException()
+            catalogs[accountId] = loaded
+            try { catalogStore?.write(accountId, binding, loaded) }
+            catch (_: Exception) { /* Ошибка хранения не отменяет полученный каталог в памяти. */ }
+        }
+        return loaded
+    }
 
     /** Превращает сохранённые сессии в безопасные карточки без токенов. */
     override fun savedAccounts(): List<AccountProfile> = sessionStore.loadAll().map { session ->
@@ -40,12 +100,15 @@ class ProptechDomruRepository internal constructor(
 
     /** Забывает старые списки, чтобы кнопка «Обновить» заново спросила сервер. */
     override fun clearCachedCatalogs() {
-        catalogs.clear()
+        synchronized(catalogStateLock) {
+            (catalogs.keys + generations.keys).forEach { generations[it] = (generations[it] ?: 0L) + 1L }
+            catalogs.clear()
+        }
     }
 
     override suspend fun signIn(login: String, password: String): AccountProfile {
         val authorized = oidcClient.signIn(login, password)
-        return saveAuthorizedSession(authorized, password = password)
+        return withContext(Dispatchers.IO) { saveAuthorizedSession(authorized, password = password) }
     }
 
     /**
@@ -69,7 +132,7 @@ class ProptechDomruRepository internal constructor(
         )
         if (updated.id != accountId && sessionStore.deleteIfUnchanged(oldSession)) {
             // Убираем прежний номер только если за время входа его запись не заменили.
-            catalogs.remove(accountId)
+            invalidateCatalog(accountId)
         }
         return updated
     }
@@ -130,7 +193,7 @@ class ProptechDomruRepository internal constructor(
         )
         if (updated.id != accountId && sessionStore.deleteIfUnchanged(oldSession)) {
             // Новый вход по прежнему номеру не должен исчезнуть вместе со старой записью.
-            catalogs.remove(accountId)
+            invalidateCatalog(accountId)
         }
         return updated
     }
@@ -163,7 +226,7 @@ class ProptechDomruRepository internal constructor(
             if (error is CancellationException) throw error
         } finally {
             removed = sessionStore.deleteIfUnchanged(oldSession)
-            if (removed) catalogs.remove(accountId)
+            if (removed) invalidateCatalog(accountId)
         }
         // Проверяем после finally, чтобы не скрыть отмену корутины ошибкой конфликта.
         if (!removed) {
@@ -228,10 +291,8 @@ class ProptechDomruRepository internal constructor(
     /** Возвращает готовый каталог из памяти или один раз загружает его с портала. */
     private suspend fun catalog(accountId: String): RemoteCatalog {
         catalogs[accountId]?.let { return it }
-        return lockFor(accountId).withLock {
-            catalogs[accountId] ?: loadCatalog(accountId).also { loaded ->
-                if (loaded.complete) catalogs[accountId] = loaded
-            }
+        return withContext(Dispatchers.IO) {
+            lockFor(accountId).withLock { catalogs[accountId] ?: fetchCatalog(accountId) }
         }
     }
 
@@ -249,11 +310,8 @@ class ProptechDomruRepository internal constructor(
     /** Связывает дома, подъезды и устройства в единое дерево одного аккаунта. */
     private suspend fun loadCatalog(accountId: String): RemoteCatalog {
         val specifications = apiClient.loadSpecifications(accountId)
-        if (specifications.isEmpty()) {
-            throw PortalProtocolException("У аккаунта нет доступной служебной компании")
-        }
-
         val builder = RemoteCatalogBuilder()
+        val retained = mutableListOf<RemoteCatalog>()
 
         var successfulSpecifications = 0
         val failures = mutableListOf<Exception>()
@@ -274,17 +332,44 @@ class ProptechDomruRepository internal constructor(
                 if (error !is PortalRequestException && error !is DomruAuthenticationException &&
                     error !is PortalProtocolException && error !is SessionStorageException &&
                     error !is java.io.IOException) throw error
+                if ((error is PortalRequestException && error.statusCode == 401) ||
+                    (error is DomruAuthenticationException && error.failure in setOf(
+                        AuthenticationFailure.INVALID_CREDENTIALS,
+                        AuthenticationFailure.SESSION_EXPIRED,
+                    ))) {
+                    // 401 относится ко всей учётке. Не показываем её сохранённые двери как действующие.
+                    throw error
+                }
                 failures += error
+                // Полный список компаний авторитетен. Сохраняем старые данные только для
+                // компании с временным сбоем; 403/404 означают подтверждённую потерю доступа.
+                if (error !is PortalRequestException || error.statusCode !in setOf(403, 404)) {
+                    catalogs[accountId]?.forSpecification(specification.id)?.let(retained::add)
+                }
             }
         }
 
-        if (successfulSpecifications == 0 && failures.isNotEmpty()) {
+        if (successfulSpecifications == 0 && retained.isEmpty() && failures.isNotEmpty() &&
+            failures.any { it !is PortalRequestException || it.statusCode !in setOf(403, 404) }) {
             throw failures.lastOrNull { isVideoRequestRetryable(it) }
                 ?: failures.last()
         }
 
-        return builder.build(complete = failures.isEmpty())
+        val fresh = builder.build(complete = failures.isEmpty())
+        return retained.fold(fresh) { result, previous ->
+            RemoteCatalog(result.streets + previous.streets,
+                result.housesByStreetId + previous.housesByStreetId,
+                result.entrancesByHouseId + previous.entrancesByHouseId,
+                result.doorsByEntranceId + previous.doorsByEntranceId, complete = false)
+        }
     }
+
+    private fun RemoteCatalog.forSpecification(id: String): RemoteCatalog = RemoteCatalog(
+        streets.filter { it.id.startsWith("$id::") },
+        housesByStreetId.filterKeys { it.startsWith("$id::") },
+        entrancesByHouseId.filterKeys { it.startsWith("$id::") },
+        doorsByEntranceId.filterValues { it.specificationId == id }, complete = false,
+    )
 
     /** Отделяет безопасный демонстрационный режим от настоящего портала. */
     private fun isDemoAccount(accountId: String): Boolean = demoRepository.demoAccounts().any {
@@ -311,7 +396,7 @@ class ProptechDomruRepository internal constructor(
                 ?: System.currentTimeMillis(),
         )
         sessionStore.save(stored)
-        catalogs.remove(stored.accountId)
+        invalidateCatalog(stored.accountId)
         return stored.toProfile()
     }
 

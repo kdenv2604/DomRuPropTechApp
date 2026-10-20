@@ -43,9 +43,26 @@ struct CameraPlayback: Identifiable, Equatable {
     }
 
     func show(_ entrance: Entrance, accounts: [AccountProfile], demo: Bool) {
-        guard self.entrance != entrance || self.accounts != accounts || playback == nil else { return }
-        self.entrance = entrance; self.accounts = accounts; self.demo = demo
+        self.demo = demo
+        if self.entrance?.id == entrance.id {
+            updateContext(entrance, accounts: accounts)
+            return
+        }
+        self.entrance = entrance; self.accounts = accounts
         restart()
+    }
+
+    /// Обновление списка не является обрывом камеры. Сохраняем поток, пока его источник
+    /// остаётся разрешён; следующий повтор уже воспользуется свежими данными аккаунтов.
+    func updateContext(_ entrance: Entrance, accounts: [AccountProfile]) {
+        guard self.entrance?.id == entrance.id else { return }
+        let changed = self.entrance != entrance || self.accounts != accounts
+        self.entrance = entrance; self.accounts = accounts
+        if let source = playback?.stream.source {
+            if entrance.cameraAvailable && entrance.sources.contains(source) &&
+                accounts.contains(where: { $0.id == source.accountID }) { return }
+            restart()
+        } else if changed || (playback == nil && request == nil) { restart() }
     }
 
     func hide(_ entranceID: String) { if entrance?.id == entranceID { stop() } }

@@ -24,33 +24,33 @@ enum AccountStatus: String {
     }
 }
 
-struct AccessSource: Hashable {
+struct AccessSource: Hashable, Codable {
     let accountID: String
     let remoteID: String
     var canVideo = true
 }
 
-struct Locality: Identifiable, Equatable {
+struct Locality: Identifiable, Equatable, Codable {
     let id: String
     let name: String
     static let unknown = Locality(id: "locality:unknown", name: "Населённый пункт не указан")
 }
 
-struct Street: Identifiable, Equatable {
+struct Street: Identifiable, Equatable, Codable {
     let id: String
     let name: String
     let locality: Locality
     var sources: [AccessSource] = []
 }
 
-struct House: Identifiable, Equatable {
+struct House: Identifiable, Equatable, Codable {
     let id: String
     let streetID: String
     let label: String
     var sources: [AccessSource] = []
 }
 
-struct Entrance: Identifiable, Equatable {
+struct Entrance: Identifiable, Equatable, Codable {
     let id: String
     let houseID: String
     let label: String
@@ -69,14 +69,14 @@ struct Selection: Codable, Equatable {
     var entranceID: String?
 }
 
-struct RemoteDoor {
+struct RemoteDoor: Codable {
     let specificationID: String
     let deviceID: String
     let accessControlID: String
     let cameraAvailable: Bool
 }
 
-struct Catalog {
+struct Catalog: Codable {
     var streets: [Street] = []
     var houses: [String: [House]] = [:]
     var entrances: [String: [Entrance]] = [:]

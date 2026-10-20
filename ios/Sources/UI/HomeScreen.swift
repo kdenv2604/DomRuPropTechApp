@@ -21,7 +21,7 @@ struct HomeScreen: View {
                         LazyVStack(spacing: 10) {
                             if let error = model.errorMessage { Text(error).font(.callout).foregroundColor(Palette.amber).serviceCard() }
                             if model.isDemo { Text("Демо-режим · настоящие двери не открываются").font(.caption).foregroundColor(Palette.muted) }
-                            if model.loading { ProgressView("Загружаем объекты…").padding(24) }
+                            if model.loading && model.catalog.streets.isEmpty { ProgressView("Загружаем объекты…").padding(24) }
                             else if !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { searchResults }
                             else { addressTree }
                             if !model.loading && model.catalog.streets.isEmpty {

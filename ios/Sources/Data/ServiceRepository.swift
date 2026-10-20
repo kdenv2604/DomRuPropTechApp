@@ -3,16 +3,45 @@ import Foundation
 actor ServiceRepository {
     private struct LoadingCatalog { let id: UUID; let task: Task<Catalog, Error> }
     private let vault: SessionVault
+    private let catalogStore: CatalogDiskStore?
+    private var generations: [String: UUID] = [:]
     private let oidc: OIDCSessionClient
     private let api: PortalAPI
     private var catalogs: [String: Catalog] = [:]
     private var loading: [String: LoadingCatalog] = [:]
 
-    init(vault: SessionVault = SessionVault(), transport: HTTPTransport = URLSessionTransport()) {
+    init(vault: SessionVault = SessionVault(), transport: HTTPTransport = URLSessionTransport(),
+         catalogStore: CatalogDiskStore? = nil) {
         self.vault = vault
+        self.catalogStore = catalogStore
         let oidc = OIDCClient(transport: transport)
         self.oidc = oidc
         api = PortalAPI(transport: transport, sessions: SessionProvider(vault: vault, oidc: oidc))
+    }
+
+    func restoreCatalogs() async throws {
+        for session in try await vault.all() {
+            let generation = generations[session.accountID]
+            guard let saved = catalogStore?.read(accountID: session.accountID, binding: session.catalogBinding) else { continue }
+            let current = try await vault.find(session.accountID)
+            try Task.checkCancellation()
+            if generations[session.accountID] == generation, current?.catalogBinding == session.catalogBinding,
+               catalogs[session.accountID] == nil { catalogs[session.accountID] = saved }
+        }
+    }
+
+    func cachedAccountIDs() -> Set<String> { Set(catalogs.keys) }
+
+    func cachedCatalog(accounts: [AccountProfile]) -> Catalog {
+        AddressHierarchyMerger.combine(accounts.compactMap { account in
+            catalogs[account.id].map { (account.id, $0) }
+        })
+    }
+
+    func forgetCatalog(_ accountID: String) { invalidate(accountID) }
+
+    func refreshCatalog(_ accountID: String) async throws -> Bool {
+        try await catalog(accountID, refresh: true).complete
     }
 
     func savedAccounts() async throws -> [AccountProfile] { try await vault.all().map(\.profile) }
@@ -73,32 +102,48 @@ actor ServiceRepository {
     }
 
     private func invalidate(_ accountID: String) {
+        generations[accountID] = UUID()
+        catalogStore?.remove(accountID)
         catalogs[accountID] = nil
         loading.removeValue(forKey: accountID)?.task.cancel()
     }
 
-    func catalog(_ accountID: String) async throws -> Catalog {
-        if let cached = catalogs[accountID] { return cached }
+    func catalog(_ accountID: String, refresh: Bool = false) async throws -> Catalog {
+        if !refresh, let cached = catalogs[accountID] { return cached }
         if let pending = loading[accountID] {
             let result = try await pending.task.value
             try Task.checkCancellation()
             return result
         }
-        let id = UUID()
-        let task = Task { try await Self.loadCatalog(api: api, accountID: accountID) }
+        let id = UUID(), generation = generations[accountID], previous = catalogs[accountID]
+        let task = Task {
+            guard let session = try await vault.find(accountID) else { throw ServiceError.authentication(.sessionExpired) }
+            let result = try await Self.loadCatalog(api: api, accountID: accountID, previous: previous)
+            try Task.checkCancellation()
+            guard let current = try await vault.find(accountID),
+                  current.catalogBinding == session.catalogBinding, generations[accountID] == generation else {
+                throw CancellationError()
+            }
+            return result
+        }
         loading[accountID] = LoadingCatalog(id: id, task: task)
         defer { if loading[accountID]?.id == id { loading[accountID] = nil } }
         let result = try await task.value
         try Task.checkCancellation()
         guard loading[accountID]?.id == id else { throw CancellationError() }
-        if result.complete { catalogs[accountID] = result }
+        guard let session = try await vault.find(accountID) else { throw CancellationError() }
+        try Task.checkCancellation()
+        guard loading[accountID]?.id == id, generations[accountID] == generation else { throw CancellationError() }
+        catalogs[accountID] = result
+        // Диск не является условием работы: при его ошибке используем свежий снимок в памяти.
+        try? catalogStore?.write(accountID: accountID, binding: session.catalogBinding, catalog: result)
         return result
     }
 
-    private static func loadCatalog(api: PortalAPI, accountID: String) async throws -> Catalog {
+    private static func loadCatalog(api: PortalAPI, accountID: String, previous: Catalog?) async throws -> Catalog {
         let specifications = try await api.specifications(accountID: accountID)
-        guard !specifications.isEmpty else { throw ServiceError.protocolViolation("У аккаунта нет доступной служебной компании") }
         var builder = RemoteCatalogBuilder()
+        var retained: [Catalog] = []
         var failures: [Error] = []
         var successful = 0
         for specification in specifications {
@@ -114,11 +159,30 @@ actor ServiceRepository {
                 successful += 1
             } catch {
                 try Task.checkCancellation()
+                if let serviceError = error as? ServiceError {
+                    switch serviceError {
+                    case .http(401, _), .authentication(.sessionExpired), .authentication(.invalidCredentials):
+                        // 401 относится ко всей учётке; AppModel удалит её снимок после проверки статуса.
+                        throw error
+                    default:
+                        break
+                    }
+                }
                 failures.append(error)
+                let revoked: Bool
+                if case ServiceError.http(let status, _) = error { revoked = [403, 404].contains(status) }
+                else { revoked = false }
+                if !revoked, let previous { retained.append(previous.forSpecification(specification.id)) }
             }
         }
-        if successful == 0, let error = preferredFailure(failures) { throw error }
-        return builder.build(complete: failures.isEmpty)
+        if successful == 0, retained.isEmpty,
+           let error = preferredFailure(failures.filter {
+               if case ServiceError.http(let status, _) = $0 { return ![403, 404].contains(status) }
+               return true
+           }) { throw error }
+        var result = builder.build(complete: failures.isEmpty)
+        for old in retained { result.retain(old) }
+        return result
     }
 
     func combinedCatalog(accounts: [AccountProfile]) async throws -> Catalog {

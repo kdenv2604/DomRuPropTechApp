@@ -18,6 +18,12 @@ interface DomruRepository {
     fun demoAccounts(): List<AccountProfile>
     /** Сбрасывает сохранённый в памяти каталог перед обновлением. */
     fun clearCachedCatalogs()
+    /** Восстанавливает адреса только сохранённых аккаунтов, без сетевых запросов. */
+    suspend fun restoreCatalogs() {}
+    fun cachedAccountIds(): Set<String> = emptySet()
+    /** Заменяет снимок после ответа сервера; false означает частичное обновление. */
+    suspend fun refreshCatalog(accountId: String): Boolean = true
+    suspend fun forgetCatalog(accountId: String) {}
     /** Проверяет, разрешены ли сейчас запросы через аккаунт. */
     suspend fun checkAccess(accountId: String): AccountAccessStatus
     /** Добавляет пароль к сессии, сохранённой старой версией приложения. */
